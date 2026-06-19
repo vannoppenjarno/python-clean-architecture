@@ -91,6 +91,13 @@ Findings are reported by severity (Critical / Important / Suggestions) with file
 /extract-god-class [path]         Find and split god classes into focused collaborators
 ```
 
+**Learning:**
+```
+/learn-architecture [topic]       Learn a design or architecture topic — theory + the Pythonic way + your code
+```
+
+`/learn-architecture` explains rather than edits. Pick any topic from the skill (the 7 principles, three-layer architecture, the 25 Pythonic patterns, GRASP, DDD, code smells, REST, Python craft) and get either a **Lesson** (structured walkthrough) or a **Drill** (interactive Socratic Q&A). Every topic is grounded twice: a canonical illustration from the bundled hotel-API example, plus an analysis of *your* code — whether the concept already applies, could apply, or should apply (a violation to fix). Each lesson ends with trade-offs, the "commonly confused with" comparison (Strategy vs State, Adapter vs Facade…), and self-check questions.
+
 **Scaffolding & Testing:**
 ```
 /scaffold-api <project-name>      Generate a new FastAPI project with clean architecture
@@ -117,6 +124,7 @@ python-clean-architecture/
 │   ├── decouple.md
 │   ├── make-pythonic.md
 │   ├── extract-god-class.md
+│   ├── learn-architecture.md
 │   ├── scaffold-api.md
 │   ├── scaffold-tests.md
 │   └── add-endpoint.md
