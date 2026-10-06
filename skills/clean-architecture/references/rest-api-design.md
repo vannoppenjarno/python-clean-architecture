@@ -1,6 +1,6 @@
 # REST API Design
 
-Conventions and best practices for designing RESTful APIs with FastAPI. These guidelines complement the three-layer architecture in `layered-architecture.md` — they apply specifically to the Router layer.
+Conventions and best practices for designing RESTful APIs with FastAPI. These guidelines complement the layered architecture in `layered-architecture.md` — they apply specifically to the API adapter layer (`api/`: routers, schemas, error mapping).
 
 ---
 
@@ -80,9 +80,13 @@ Make pagination consistent across all list endpoints:
 
 ```python
 @router.get("/")
-async def list_customers(offset: int = 0, limit: int = 20):
-    customers = operations.list_all(db, offset=offset, limit=limit)
-    return {"data": customers, "offset": offset, "limit": limit}
+def list_customers(service: CustomerServiceDep, offset: int = 0, limit: int = 20):
+    customers = service.list_customers(offset=offset, limit=limit)  # pushes paging into the repository query
+    return {
+        "data": [CustomerOut.from_domain(c) for c in customers],
+        "offset": offset,
+        "limit": limit,
+    }
 ```
 
 ---
@@ -92,10 +96,10 @@ async def list_customers(offset: int = 0, limit: int = 20):
 FastAPI auto-generates OpenAPI docs from type hints and Pydantic models. Enhance with:
 
 ```python
-@router.post("/", status_code=201, response_model=Customer, summary="Create a customer")
-async def create_customer(data: CustomerCreate):
+@router.post("/", status_code=201, response_model=CustomerOut, summary="Create a customer")
+def create_customer(body: CustomerCreate, service: CustomerServiceDep) -> CustomerOut:
     """Create a new customer with name and email. Returns the created customer with generated ID."""
-    return operations.create(data.model_dump(), db)
+    return CustomerOut.from_domain(service.register(body.to_command()))
 ```
 
 - **`response_model`** — documents (and filters) the response schema
@@ -113,7 +117,7 @@ Use the `responses` parameter on endpoints to document what each status code mea
 @router.post(
     "/",
     status_code=201,
-    response_model=Customer,
+    response_model=CustomerOut,
     responses={
         400: {"description": "Customer with this email already exists"},
         422: {"description": "Validation error in request body"},
@@ -146,19 +150,18 @@ Return a `metadata` dictionary alongside resource data for computed or derived i
 
 ```python
 @router.get("/{booking_id}")
-async def get_booking(booking_id: str):
-    booking = operations.get_by_id(booking_id, db)
+def get_booking(booking_id: str, service: BookingServiceDep, today: TodayDep):
+    booking = service.get_booking(booking_id)        # raises BookingNotFound → 404 via handler
     return {
-        **booking,
+        **BookingOut.from_domain(booking).model_dump(mode="json"),
         "metadata": {
-            "total_price": compute_total(booking),
-            "nights": compute_nights(booking),
-            "is_refundable": booking["check_in"] > datetime.now(),
+            "nights": booking.period.nights,               # derived by the domain
+            "is_refundable": booking.period.check_in > today,
         },
     }
 ```
 
-This keeps the core resource clean while providing useful derived values. The client knows `metadata` fields are computed, not stored.
+This keeps the core resource clean while providing useful derived values. The client knows `metadata` fields are computed, not stored. The values come from domain behavior; the router only shapes the response. Inject "today" (or a clock) rather than calling `datetime.now()` inline so the endpoint stays testable.
 
 ---
 
@@ -183,7 +186,7 @@ Rate limiting controls how many requests a client can make within a time window.
 ### SlowAPI Integration
 
 ```bash
-pip install slowapi
+uv add slowapi
 ```
 
 ```python
@@ -261,11 +264,12 @@ limiter = Limiter(key_func=get_remote_address, storage_uri="redis://localhost:63
 ## Relationship to Architecture Layers
 
 ```
-Client  →  Router (REST conventions)  →  Operations (business logic)  →  Database
+Client → FastAPI router (adapter) → service / use case → domain → repository port → infrastructure
 ```
 
-- **Router** enforces REST conventions: HTTP methods, status codes, URL naming, pagination parameters, error response format
-- **Operations** contain business rules and don't know about HTTP
-- **Database** handles persistence and doesn't know about REST
+- **Router (API adapter)** enforces REST conventions: HTTP methods, status codes, URL naming, pagination parameters, error response format. It validates input with Pydantic schemas, maps it to a command, and maps domain results back to response schemas.
+- **Services / use cases** orchestrate the domain and know nothing about HTTP. They raise domain exceptions, never `HTTPException`.
+- **Domain** holds the business rules.
+- **Repository port + infrastructure** handle persistence (SQLModel) behind a Protocol and know nothing about REST.
 
-See `layered-architecture.md` for the full three-layer architecture. See `error-handling.md` for exception-to-HTTP-status mapping patterns.
+See `layered-architecture.md` for the full layered architecture, `error-handling.md` for mapping domain exceptions to HTTP status codes in the adapter, and `testing-strategy.md` for API tests with `TestClient` and `app.dependency_overrides`.

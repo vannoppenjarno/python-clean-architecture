@@ -130,7 +130,7 @@ The GUI is fully decoupled from the IoT subsystem. It has no imports from `iot/`
 
 ## Architecture: Facade + MVC
 
-The Facade works naturally with MVC (or our Routers → Operations → Database architecture):
+The Facade works naturally with MVC (and with the layered architecture, see below):
 
 ```
 GUI (View)  →  Controller Functions  →  Facade  →  Subsystem
@@ -141,7 +141,25 @@ GUI (View)  →  Controller Functions  →  Facade  →  Subsystem
 - **Facade** provides a simplified interface to the complex subsystem
 - **Subsystem** contains the actual implementation details
 
-This maps to our three-layer architecture: the Facade sits at the Database layer boundary, providing a clean interface that Operations can use.
+In the layered architecture (`references/layered-architecture.md`), a Facade typically lives in `infrastructure/`. It wraps the complex subsystem (IoT protocol, SDK, legacy system) and implements a small **port** (`Protocol`) defined on the inner side. Services depend on that port only:
+
+```
+api/ (router)  →  services/ (use case)  →  port Protocol  ←  infrastructure/ Facade  →  subsystem
+```
+
+```python
+# services/ports.py — what the use case needs, in domain terms
+class SpeakerControl(Protocol):
+    def set_power(self, on: bool) -> None: ...
+    def status(self) -> str: ...
+
+# infrastructure/iot_facade.py — hides connections, messages, encoding
+class IoTSpeakerFacade:                 # implements SpeakerControl structurally
+    def set_power(self, on: bool) -> None: ...
+    def status(self) -> str: ...
+```
+
+The composition root (`main()` or `api/dependencies.py`) creates the Facade and passes it to the service. Tests pass a small fake instead.
 
 ---
 

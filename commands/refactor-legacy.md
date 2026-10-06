@@ -38,18 +38,20 @@ Analyze the code at `$ARGUMENTS` (or the current working directory if no path gi
    - Extract named helper functions from complex conditions
 
    **Phase 3: Introduce Protocol interfaces**
-   - Define Protocol for external dependencies
+   - Define domain-specific Protocols (ports) for external dependencies, covering only what the code actually uses
    - Apply dependency injection at the composition root
-   - Create stubs for testing
+   - Create in-memory fakes of those ports for testing (in `tests/`)
+   - Move the real implementations (SQL/ORM, HTTP clients) into infrastructure
 
    **Phase 4: Add proper unit tests**
-   - Test extracted pure logic with stubs
+   - Test extracted pure logic and services with the in-memory fakes
+   - Add integration tests for the real implementations
    - Verify business rules independently of I/O
 
 5. **For each phase**, show specific before/after code snippets from the actual codebase.
 
 References:
 - `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/refactoring-case-studies.md`
-- `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/testing-legacy-code.md`
+- `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/testing-strategy.md` (section 6: refactoring legacy code toward testability)
 - `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/code-smells.md`
 - `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/dependency-injection.md`

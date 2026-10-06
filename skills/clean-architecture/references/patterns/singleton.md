@@ -18,7 +18,7 @@ Some resources should exist exactly once: configuration, database connection poo
 
 ## Preferred Approach: Dependency Injection
 
-Pass the shared resource as an explicit parameter. Create it once in the composition root (`main()` or the router layer in FastAPI).
+Pass the shared resource as an explicit parameter. Create it once in the composition root (`main()`, or the app factory and dependency providers in `api/dependencies.py` in FastAPI).
 
 ```python
 # config.py
@@ -211,7 +211,7 @@ class ConnectionPool:
         self._pool.put(conn)
 ```
 
-SQLAlchemy's `create_engine()` creates a connection pool internally. FastAPI's `Depends(get_db)` acquires and releases connections from this pool per-request.
+SQLAlchemy's `create_engine()` (used by SQLModel) creates a connection pool internally. Create the engine once in the app factory/lifespan; the `get_session` provider in `api/dependencies.py`, used via `Depends(get_session)`, then acquires and releases connections from this pool per request.
 
 ---
 

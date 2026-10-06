@@ -250,11 +250,13 @@ importers/
 The directory layout should reflect the software architecture pattern in use.
 
 ```
-# Layered architecture
-routers/
-    operations/
-    db/
-    models/
+# Layered architecture (see layered-architecture.md)
+src/<package>/
+    domain/
+    services/
+    repositories/
+    infrastructure/
+    api/
 
 # MVC
 src/
@@ -388,11 +390,11 @@ When reviewing Python code, check for:
 - [ ] No mutable default arguments
 
 ### Design
-- [ ] Each layer depends only on the layer below
-- [ ] Operations accept Protocol parameters (not concrete DB classes)
+- [ ] Dependencies point inward only (api/infrastructure → services → domain)
+- [ ] Services depend on port Protocols (not concrete repositories, sessions or clients)
 - [ ] No Law of Demeter violations (chains of `a.b.c.method()`)
 - [ ] Composition used instead of deep inheritance
-- [ ] One composition root (router/main) where concrete wiring happens
+- [ ] One composition root (`api/dependencies.py` or `main()`) where concrete wiring happens
 
 ### Error Handling
 - [ ] Custom domain exceptions (not generic Exception)

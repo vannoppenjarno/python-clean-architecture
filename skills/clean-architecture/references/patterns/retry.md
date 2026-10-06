@@ -2,7 +2,7 @@
 
 **Recognize:** Code that calls external services (APIs, databases, message queues) fails intermittently due to transient errors — network timeouts, rate limits, temporary unavailability.
 
-**Problem:** Without retry logic, a single transient failure causes the entire operation to fail. Naive retry (immediate, unlimited) can overwhelm the service. Retry logic mixed into business code clutters operations functions.
+**Problem:** Without retry logic, a single transient failure causes the entire operation to fail. Naive retry (immediate, unlimited) can overwhelm the service. Retry logic mixed into business code clutters services and use cases; keep it at the adapter/infrastructure boundary.
 
 ---
 

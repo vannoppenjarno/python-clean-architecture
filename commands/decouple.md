@@ -24,20 +24,23 @@ Analyze the code at `$ARGUMENTS` (or the current working directory if no path gi
    ```
    Module Dependencies
    ───────────────────
-   routers/booking.py → operations/booking.py, models/booking.py
-   operations/booking.py → models/booking.py  (no DB import ✓)
-   routers/admin.py → db/models.py             ⚠ concrete DB import
+   api/routers/bookings.py → services/booking_service.py, api/schemas.py
+   services/booking_service.py → repositories/bookings.py, domain/booking.py  (port only ✓)
+   api/routers/admin.py → infrastructure/tables.py                            ⚠ adapter bypasses service
+   services/report_service.py → infrastructure/sqlmodel_repositories.py      ⚠ concrete repository import
    ```
+
+   Judge dependencies by direction, not folder names: inner code (domain, services) must never import outer code (infrastructure, frameworks, API). Concrete implementations should be created only in the composition root.
 
 4. **Propose decoupling** — For each issue, show:
    - **File and line**
    - **Principle violated** — which of the 7 design principles (P1–P7)
    - **Current coupling** — what the code does now
-   - **Decoupled version** — using Protocol, Callable, or composition root
+   - **Decoupled version** — using a domain-specific Protocol (defined on the inner side), a Callable alias, or the composition root. Only introduce an abstraction where it buys something (a test fake, a second implementation, a layer boundary). Do not add one for every class.
    - **Before/after code**
 
 5. **Ask before applying** — Use AskUserQuestion to confirm which changes to apply.
 
 6. **Apply changes** — Edit the files with the approved decoupling.
 
-For guidance on Protocol-based DI, consult `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/layered-architecture.md` and `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/design-principles.md`.
+For guidance on Protocol-based DI, consult `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/layered-architecture.md`, `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/dependency-injection.md` and `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/design-principles.md`.

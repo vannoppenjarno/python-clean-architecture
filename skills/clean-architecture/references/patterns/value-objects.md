@@ -141,5 +141,5 @@ EmailAddress("not-an-email")  # ValueError
 
 - Fixes **Primitive Obsession** (`references/code-quality.md` rule)
 - Supports **Start with the Data** (`references/design-principles.md`) — model domain concepts as types
-- Works with **Pydantic models** — value objects can be fields in Pydantic `BaseModel` classes
+- Lives in the **domain** as a frozen dataclass; at the API boundary, Pydantic schemas map primitive fields to and from value objects (`references/pydantic-validation.md` §7)
 - Supports **High Cohesion** — validation lives with the data it protects

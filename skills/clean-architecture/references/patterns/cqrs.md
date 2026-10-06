@@ -2,7 +2,9 @@
 
 Separate the write model (source of truth) from the read model (optimized for queries). Commands modify state; queries fetch pre-computed views. Eliminates the problem of list endpoints that compute derived fields on every request.
 
-> **Note:** CQRS is an advanced pattern. Our three-layer architecture (Routers → Operations → Database) is the default for most projects. Use CQRS when read and write patterns diverge significantly.
+> **Note:** CQRS is an advanced pattern. The layered architecture (`domain/`, `services/`, `repositories/`, `infrastructure/`, `api/` — see `references/layered-architecture.md`) is the default for most projects. Use CQRS when read and write patterns diverge significantly.
+>
+> The examples below are condensed to show the mechanics, with database calls inline. In a real project, place them in the layers: command handlers become services that depend on a write-side repository port, the projector and the read-side queries live in `infrastructure/` behind ports, and endpoints stay thin in `api/`.
 
 ---
 
@@ -226,7 +228,7 @@ async def get_ticket(ticket_id: str) -> TicketDetails:
 
 ## When to Use CQRS
 
-| Use CQRS when... | Stick with three-layer architecture when... |
+| Use CQRS when... | Stick with the default layered architecture when... |
 |---|---|
 | List views need derived/computed fields | Read and write shapes are similar |
 | Dashboard/analytics endpoints are slow | Simple CRUD operations |
@@ -240,7 +242,7 @@ async def get_ticket(ticket_id: str) -> TicketDetails:
 
 - **Event Sourcing** (event-sourcing.md) — Natural companion. Events are the write model; projections are the read model.
 - **Pub/Sub** (notification.md) — Projectors can be event subscribers, updating read models asynchronously.
-- **Three-layer architecture** (`references/layered-architecture.md`) — CQRS extends it. Commands go through operations layer; queries go through a separate read path.
+- **Layered architecture** (`references/layered-architecture.md`) — CQRS extends it. Commands go through services (use cases) and the write-side repository port; queries go through a separate read path (a read-model port implemented in `infrastructure/`) that can skip the domain entirely.
 
 ---
 

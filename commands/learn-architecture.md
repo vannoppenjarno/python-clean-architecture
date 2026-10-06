@@ -27,14 +27,14 @@ Unless the arguments already make it obvious, use AskUserQuestion to ask **"How 
 
 ## Step 2 — Pick the topic
 
-If `$ARGUMENTS` names a topic, match it to the catalog below (fuzzy match — `pubsub` → Notification, `DI` → Dependency Injection, `3-layer` → Layered Architecture).
+If `$ARGUMENTS` names a topic, match it to the catalog below (fuzzy match — `pubsub` → Notification, `DI` → Dependency Injection, `layers` / `clean architecture` / `ports and adapters` / `3-layer` → Clean Architecture layers, `uv` / `pyproject` → Project setup, `fakes` → Testing strategy).
 
 If no topic is given, use AskUserQuestion to ask **"What do you want to learn?"** with these buckets:
 
-1. **Principles & Architecture** — the 7 design principles, GRASP, three-layer architecture, dependency injection, DDD, domain modeling, project organization
+1. **Principles & Architecture** — the 7 design principles, GRASP, Clean Architecture layers (dependency rule, ports, composition root), dependency injection, DDD, domain modeling, project setup and organization
 2. **Pythonic Patterns** — the 25 patterns (Strategy, Factory, Repository, State, Adapter, etc.)
 3. **Code Quality & Refactoring** — the 22 rules, code smells, refactoring case studies, error handling
-4. **APIs, Testing & Python craft** — REST design, testable APIs, Pydantic, classes/dataclasses, functions, types, context managers, decorators, async, pattern matching
+4. **APIs, Testing & Python craft** — REST design, testing strategy per layer (fakes, integration, API tests), Pydantic, classes/dataclasses, functions, types, context managers, decorators, async, pattern matching
 
 After the bucket is chosen, name the specific topic. If the bucket is **Pythonic Patterns**, list the 25 patterns grouped (see catalog) and let the user pick one — don't force a four-option picker on 25 patterns.
 
@@ -45,10 +45,11 @@ All paths are under `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/
 **Principles & Architecture**
 - The 7 design principles → `design-principles.md`
 - GRASP principles → `grasp-principles.md`
-- Three-layer architecture (Routers → Operations → Database) → `layered-architecture.md`
+- Clean Architecture layers (Infrastructure → Adapters → Services → Domain; ports, mapping at boundaries, composition root, request flow, scaling the structure to project size) → `layered-architecture.md`
 - Dependency injection → `dependency-injection.md`
 - Domain-Driven Design → `domain-driven-design.md`
 - Domain modeling (entities, value objects, relationships) → `domain-modeling.md`
+- Project setup (uv, `pyproject.toml`, `src/` layout, tooling, which stack pieces to add) → `project-setup.md`
 - Project organization (modules, packages, the "utils" trap) → `project-organization.md`
 
 **Pythonic Patterns** (each → `patterns/<name>.md`; `pythonic-patterns.md` is the quick-reference lookup)
@@ -66,7 +67,7 @@ All paths are under `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/
 
 **APIs, Testing & Python craft**
 - REST API design → `rest-api-design.md`
-- Testable API / stub-based testing → `testable-api.md`
+- Testing strategy (domain unit tests, service tests with in-memory fakes, repository integration tests, API tests) → `testing-strategy.md`
 - Advanced testing (pytest, property-based, stateful) → `testing-advanced.md`
 - Pydantic validation → `pydantic-validation.md`
 - Classes vs dataclasses → `classes-and-dataclasses.md`
@@ -82,7 +83,7 @@ All paths are under `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/
 
 Always anchor the topic in concrete code, using **two** anchors so it's both canonical and personal:
 
-1. **Always: the bundled example.** Use `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/examples/fastapi-hotel-api/` (and the topic's reference file) for a clean, correct illustration of the concept. This is the canonical "here's what good looks like" — show it every time, even when the user's project also has an example.
+1. **Always: the bundled example.** Use `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/examples/fastapi-hotel-api/` (and the topic's reference file) for a clean, correct illustration of the concept. Its layout is `src/hotel/{domain,services,repositories,infrastructure,api}` with `tests/{fakes.py,unit,integration,api}`. Point to the folder that matches the topic (e.g. `repositories/` + `infrastructure/sqlmodel_repositories.py` for Repository, `api/dependencies.py` for the composition root, `domain/` for value objects, `tests/fakes.py` for testing with fakes). This is the canonical "here's what good looks like" — show it every time, even when the user's project also has an example.
 
 2. **Also: the user's project.** Scan the Python files in the working directory and report which of these is true (cite `file:line`):
    - **Already applied** — it's in use here; point to it and assess whether it's done well.
@@ -105,7 +106,7 @@ Walk through the topic in this structure. Keep each part tight — this is a les
 3. **How it works** — the mechanics and key vocabulary.
 4. **The Pythonic way** — the idiomatic implementation, illustrated with the bundled example (anchor 1 from Step 3). Prefer Protocol/Callable/`functools.partial`/dict-dispatch over ABC-heavy OOP, per this skill's defaults. Show the real example code.
 5. **In your project** — anchor 2 from Step 3. State which case holds — *already applied*, *could apply*, *should apply* (a violation to fix), or *doesn't apply here* — and show the actual code at `file:line`. This is where the textbook concept becomes "what it means for my codebase right now."
-6. **Trade-offs & "commonly confused with"** — costs, when *not* to use it (YAGNI / KISS), and the comparison that trips people up: Strategy vs State, Adapter vs Facade, Repository vs the `DataInterface` Protocol, Factory vs Builder, Value Object vs Entity, composition vs inheritance, etc. Pick the comparison(s) that fit the topic.
+6. **Trade-offs & "commonly confused with"** — costs, when *not* to use it (YAGNI / KISS), and the comparison that trips people up: Strategy vs State, Adapter vs Facade, domain-specific Repository port vs a generic CRUD interface, Factory vs Builder, Value Object vs Entity, composition vs inheritance, etc. Pick the comparison(s) that fit the topic.
 7. **Check your understanding** — 3–4 questions an interviewer might ask, plus one **"explain it back in your own words"** prompt. Offer: *"Want me to drill you on these interactively? Re-run with Drill mode."*
 
 ### Drill mode

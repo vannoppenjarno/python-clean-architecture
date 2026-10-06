@@ -37,7 +37,7 @@ sale.add_item(product=keyboard, quantity=1)
 
 The caller doesn't need to know how Sale is structured internally — only that it can accept products with quantities. The Factory pattern is a direct application of the Creator principle.
 
-**In FastAPI:** The router (composition root) creates `DBInterface` instances because it has the session and model class needed to construct them. Operations never create their own data access objects.
+**In FastAPI:** The dependency providers in `api/dependencies.py` (the composition root) create the `SqlModelBookingRepository` and the `BookingService`, because they hold the session needed to construct them. Services never create their own repositories; they receive them as ports.
 
 ---
 
@@ -95,7 +95,7 @@ class ProductController:
         self.view.update_product_list(self.model.get_all())
 ```
 
-**In FastAPI:** The three-layer architecture naturally applies this — routers are controllers that delegate to operations.
+**In FastAPI:** The layered architecture naturally applies this — routers are controllers (adapters) that translate HTTP into a command and delegate to a service / use case.
 
 ---
 
@@ -221,7 +221,7 @@ class ProductController:
         ...  # works with tkinter, Qt, or any UI framework
 ```
 
-This is the same principle behind `DataInterface` in the three-layer architecture — operations are protected from changes in the database layer.
+This is the same principle behind repository ports such as `BookingRepository` — services depend on the Protocol, so they are protected from changes in the database and ORM behind it.
 
 ---
 
@@ -247,7 +247,7 @@ class PaymentHandler:
         self.store.save(TransactionRecord(amount=self.payment.amount))
 ```
 
-`TransactionStore` and `PaymentHandler` don't represent domain objects — they exist to keep `Payment` focused. The `DBInterface` class in the three-layer architecture is a pure fabrication: it exists for design purposes (decoupling), not because "database interface" is a domain concept.
+`TransactionStore` and `PaymentHandler` don't represent domain objects — they exist to keep `Payment` focused. A repository implementation such as `SqlModelBookingRepository` is a pure fabrication: it exists for design purposes (keeping persistence out of the domain and services), not because "SQL repository" is a domain concept.
 
 ---
 

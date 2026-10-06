@@ -47,11 +47,10 @@ FastAPI handles both `async def` and plain `def` route handlers:
 - **`def`** — Use when the handler does only CPU-bound or synchronous work. FastAPI runs it in a thread pool automatically.
 
 ```python
-# Async handler — calls async database
-@router.get("/users/{user_id}")
-async def get_user(user_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(User).where(User.id == user_id))
-    return result.scalar_one()
+# Async handler — awaits an async service (which awaits an async repository)
+@router.get("/bookings/{booking_id}")
+async def get_booking(booking_id: str, service: AsyncBookingServiceDep) -> BookingOut:
+    return BookingOut.from_domain(await service.get_booking(booking_id))
 
 # Sync handler — CPU-bound computation
 @router.post("/reports")
@@ -141,7 +140,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
 @asynccontextmanager
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+async def transaction() -> AsyncGenerator[AsyncSession, None]:   # infrastructure helper
     session = AsyncSession(engine)
     try:
         yield session
@@ -215,155 +214,185 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 engine = create_async_engine("postgresql+asyncpg://user:pass@localhost/db")
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with async_session() as session:
         yield session
 ```
 
-### Async DataInterface
+The engine and session factory belong in `infrastructure/`; the `get_session` provider lives in the composition root (`api/dependencies.py`).
 
-Extend the three-layer architecture's DataInterface for async operations:
+Async does not change the architecture. Ports become `async` Protocols, services `await` them, and the SQL stays in infrastructure.
+
+### Async Repository Port
+
+A domain-specific port, defined on the inner side (`repositories/`), speaking in domain types:
 
 ```python
-from typing import Any, Protocol
+# repositories/bookings.py
+from typing import Protocol
 
-DataObject = dict[str, Any]
+from hotel.domain.booking import Booking, StayPeriod
+from hotel.domain.room import Room
 
-class AsyncDataInterface(Protocol):
-    async def read_by_id(self, id: str) -> DataObject: ...
-    async def read_all(self) -> list[DataObject]: ...
-    async def create(self, data: DataObject) -> DataObject: ...
-    async def update(self, id: str, data: DataObject) -> DataObject: ...
-    async def delete(self, id: str) -> None: ...
+
+class AsyncRoomRepository(Protocol):
+    async def get(self, room_id: str) -> Room | None: ...
+
+
+class AsyncBookingRepository(Protocol):
+    async def add(self, booking: Booking) -> None: ...
+    async def get(self, booking_id: str) -> Booking | None: ...
+    async def find_overlapping(self, room_id: str, period: StayPeriod) -> list[Booking]: ...
 ```
 
-### Async Operations Layer
+### Async Service (Use Case)
 
 ```python
-async def create_booking(
-    data: BookingCreate,
-    booking_db: AsyncDataInterface,
-    room_db: AsyncDataInterface,
-) -> Booking:
-    room = await room_db.read_by_id(data.room_id)
-    nights = (data.to_date - data.from_date).days
-    price = nights * room["price"]
-    booking_data = {**data.model_dump(), "id": str(uuid4()), "price": price}
-    created = await booking_db.create(booking_data)
-    return Booking(**created)
+# services/booking_service.py
+class AsyncBookingService:
+    def __init__(
+        self,
+        rooms: AsyncRoomRepository,
+        bookings: AsyncBookingRepository,
+        new_id: Callable[[], str],
+    ) -> None:
+        self._rooms = rooms
+        self._bookings = bookings
+        self._new_id = new_id
+
+    async def book_room(self, command: BookRoom) -> Booking:
+        room = await self._rooms.get(command.room_id)
+        if room is None:
+            raise RoomNotFound(command.room_id)
+        if await self._bookings.find_overlapping(room.id, command.period):
+            raise RoomUnavailable(room.id, command.period)
+
+        booking = Booking(
+            id=self._new_id(),
+            room_id=room.id,
+            guest_name=command.guest_name,
+            period=command.period,
+            total_price=room.price_for(command.period),  # pure domain rule, no await
+        )
+        await self._bookings.add(booking)
+        return booking
 ```
 
-### Async DBInterface Implementation
+The service has no `AsyncSession`, no `select()` and no `HTTPException`. Domain logic (`price_for`, `overlaps`) stays synchronous.
+
+### Async SQLModel Repository (Infrastructure)
 
 ```python
+# infrastructure/async_repositories.py
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlmodel import col, select
 
-class AsyncDBInterface:
-    def __init__(self, session: AsyncSession, model):
-        self.session = session
-        self.model = model
+from hotel.domain.booking import Booking, StayPeriod
+from hotel.infrastructure.tables import BookingTable
 
-    async def read_by_id(self, id: str) -> DataObject:
-        result = await self.session.execute(
-            select(self.model).where(self.model.id == id)
+
+class AsyncSqlModelBookingRepository:
+    """Implements AsyncBookingRepository (structurally)."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, booking: Booking) -> None:
+        self._session.add(_booking_to_row(booking))
+        await self._session.commit()
+
+    async def get(self, booking_id: str) -> Booking | None:
+        row = await self._session.get(BookingTable, booking_id)
+        return _booking_to_domain(row) if row else None
+
+    async def find_overlapping(self, room_id: str, period: StayPeriod) -> list[Booking]:
+        statement = select(BookingTable).where(
+            BookingTable.room_id == room_id,
+            col(BookingTable.check_in) < period.check_out,
+            col(BookingTable.check_out) > period.check_in,
         )
-        row = result.scalar_one_or_none()
-        if row is None:
-            raise KeyError(f"Not found: {id}")
-        return row.to_dict()
+        result = await self._session.execute(statement)
+        return [_booking_to_domain(row) for row in result.scalars()]
+```
 
-    async def read_all(self) -> list[DataObject]:
-        result = await self.session.execute(select(self.model))
-        return [row.to_dict() for row in result.scalars().all()]
+`_booking_to_domain` / `_booking_to_row` are the same explicit mapping functions as in the sync repository (`layered-architecture.md`). SQLModel also offers `sqlmodel.ext.asyncio.session.AsyncSession` with an `exec()` method if you prefer that API.
 
-    async def create(self, data: DataObject) -> DataObject:
-        instance = self.model(**data)
-        self.session.add(instance)
-        await self.session.commit()
-        await self.session.refresh(instance)
-        return instance.to_dict()
+Wire it in the composition root:
 
-    async def update(self, id: str, data: DataObject) -> DataObject:
-        result = await self.session.execute(
-            select(self.model).where(self.model.id == id)
-        )
-        instance = result.scalar_one_or_none()
-        if instance is None:
-            raise KeyError(f"Not found: {id}")
-        for key, value in data.items():
-            setattr(instance, key, value)
-        await self.session.commit()
-        await self.session.refresh(instance)
-        return instance.to_dict()
+```python
+# api/dependencies.py
+AsyncSessionDep = Annotated[AsyncSession, Depends(get_session)]
 
-    async def delete(self, id: str) -> None:
-        result = await self.session.execute(
-            select(self.model).where(self.model.id == id)
-        )
-        instance = result.scalar_one_or_none()
-        if instance is None:
-            raise KeyError(f"Not found: {id}")
-        await self.session.delete(instance)
-        await self.session.commit()
+
+def get_booking_service(session: AsyncSessionDep) -> AsyncBookingService:
+    return AsyncBookingService(
+        rooms=AsyncSqlModelRoomRepository(session),
+        bookings=AsyncSqlModelBookingRepository(session),
+        new_id=lambda: str(uuid4()),
+    )
 ```
 
 ---
 
 ## 6. Testing Async Code
 
-### Async DataInterfaceStub
+### Async In-Memory Fakes
+
+Fakes implement the async ports with plain dicts. They live in `tests/fakes.py`, not in the production package.
 
 ```python
-class AsyncDataInterfaceStub:
-    def __init__(self):
-        self.data: dict[str, DataObject] = {}
+# tests/fakes.py
+class AsyncInMemoryRoomRepository:
+    def __init__(self, rooms: list[Room] | None = None) -> None:
+        self._rooms = {room.id: room for room in rooms or []}
 
-    async def read_by_id(self, id: str) -> DataObject:
-        if id not in self.data:
-            raise KeyError(f"Not found: {id}")
-        return self.data[id]
+    async def get(self, room_id: str) -> Room | None:
+        return self._rooms.get(room_id)
 
-    async def read_all(self) -> list[DataObject]:
-        return list(self.data.values())
 
-    async def create(self, data: DataObject) -> DataObject:
-        self.data[data["id"]] = data
-        return data
+class AsyncInMemoryBookingRepository:
+    def __init__(self) -> None:
+        self.bookings: dict[str, Booking] = {}
 
-    async def update(self, id: str, data: DataObject) -> DataObject:
-        if id not in self.data:
-            raise KeyError(f"Not found: {id}")
-        self.data[id].update(data)
-        return self.data[id]
+    async def add(self, booking: Booking) -> None:
+        self.bookings[booking.id] = booking
 
-    async def delete(self, id: str) -> None:
-        if id not in self.data:
-            raise KeyError(f"Not found: {id}")
-        del self.data[id]
+    async def get(self, booking_id: str) -> Booking | None:
+        return self.bookings.get(booking_id)
+
+    async def find_overlapping(self, room_id: str, period: StayPeriod) -> list[Booking]:
+        return [
+            b for b in self.bookings.values()
+            if b.room_id == room_id and b.period.overlaps(period)
+        ]
 ```
 
-### pytest-asyncio
+### Running async tests
 
-Use `@pytest.mark.asyncio` to test async functions:
+Add an async test plugin to the dev dependency group: `uv add --dev pytest-asyncio` (or use the `anyio` pytest plugin that ships with AnyIO, which FastAPI already depends on, via `@pytest.mark.anyio`).
 
 ```python
+# tests/unit/test_async_booking_service.py
 import pytest
 
-@pytest.mark.asyncio
-async def test_create_booking_computes_price():
-    room_stub = AsyncDataInterfaceStub()
-    room_stub.data["room-1"] = {"id": "room-1", "price": 100}
 
-    booking_stub = AsyncDataInterfaceStub()
-    data = BookingCreate(
-        room_id="room-1",
-        from_date=date(2024, 1, 1),
-        to_date=date(2024, 1, 4),
+@pytest.mark.asyncio
+async def test_book_room_computes_price() -> None:
+    room = Room(id="r1", number="101", capacity=2, nightly_rate=Decimal("100.00"))
+    bookings = AsyncInMemoryBookingRepository()
+    service = AsyncBookingService(
+        AsyncInMemoryRoomRepository([room]), bookings, new_id=lambda: "b1"
     )
-    booking = await create_booking(data, booking_stub, room_stub)
-    assert booking.price == 300
+
+    booking = await service.book_room(
+        BookRoom("r1", "Ada", StayPeriod(date(2024, 1, 1), date(2024, 1, 4)))
+    )
+
+    assert booking.total_price == Decimal("300.00")
+    assert await bookings.get("b1") == booking
 ```
+
+Test the async SQLModel repository separately, as an integration test against an async engine (for example `sqlite+aiosqlite://`). See `testing-strategy.md`.
 
 ---
 
@@ -405,11 +434,21 @@ gunicorn main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bin
 
 ```dockerfile
 FROM python:3.12-slim
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY . .
-CMD ["gunicorn", "main:app", "--workers", "4", "--worker-class", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000"]
+
+# Install dependencies first (cached layer), from the lockfile only
+COPY pyproject.toml uv.lock ./
+RUN uv sync --locked --no-dev --no-install-project
+
+# Then the project itself
+COPY src ./src
+RUN uv sync --locked --no-dev
+
+ENV PATH="/app/.venv/bin:$PATH"
+CMD ["uvicorn", "hotel.api.app:app", "--host", "0.0.0.0", "--port", "8000"]
 ```
+
+Pin the uv image tag in real projects. To run several workers in one container, add `--workers 4` to `uvicorn` (or use Gunicorn with `uvicorn.workers.UvicornWorker` after `uv add gunicorn`).
 
 For Kubernetes or similar orchestrators, prefer running a single Uvicorn worker per container and letting the orchestrator handle scaling (one process per pod is simpler to monitor and restart).

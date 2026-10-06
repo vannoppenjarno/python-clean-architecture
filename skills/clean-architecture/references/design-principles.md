@@ -369,7 +369,21 @@ factory = factories[export_quality]
 
 ### Static Factory Method `from_X` Pattern
 
-When creating objects from external representations (serialization formats, config
+When an object is built from an external representation (a config file, an environment, a row from another system), put that translation in a named classmethod instead of a constructor full of parsing logic:
+
+```python
+@dataclass(frozen=True)
+class Settings:
+    database_url: str
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        return cls(database_url=os.environ.get("APP_DATABASE_URL", "sqlite:///./app.db"))
+```
+
+Keep the layers in mind. A `from_X` method on a **domain** object may only take plain Python values. A constructor like `StayPeriod.from_iso("2025-03-01", "2025-03-04")` would be fine, but `Booking.from_row(table_row)` or `Booking.from_request(schema)` is not. Translation from ORM rows or API schemas belongs on the outer side, either as mapping functions in the repository implementation or as `from_domain`/`to_command` methods on Pydantic schemas in `api/`.
+
+### Creator Functions
 
 When different types need different creation logic:
 
@@ -391,30 +405,39 @@ def read_payment_processor() -> PaymentProcessor:
 
 ### The "Single Dirty Place"
 
-A well-designed system has one conceptual place where all concrete wiring happens — the composition root. In a standalone script, this is the `main()` function. In FastAPI, the **router layer** serves as the composition root — the topmost layer where concrete database implementations are chosen and injected into operations.
+A well-designed system has one conceptual place where all concrete wiring happens — the composition root. In a standalone script, this is the `main()` function. In FastAPI, the **dependency providers in `api/dependencies.py`** serve as the composition root — the outermost place where concrete repository implementations are chosen and injected into services.
 
-For production FastAPI apps, use `Depends()` to centralize dependency creation instead of repeating it in every endpoint:
+Use `Depends()` to centralize dependency creation instead of repeating it in every endpoint:
 
 ```python
-from fastapi import Depends
-from sqlalchemy.orm import Session
+# api/dependencies.py
+from collections.abc import Iterator
+from typing import Annotated
+from uuid import uuid4
 
-def get_db() -> Generator[Session, None, None]:
-    session = SessionLocal()
-    try:
+from fastapi import Depends, Request
+from sqlmodel import Session
+
+def get_session(request: Request) -> Iterator[Session]:
+    with Session(request.app.state.engine) as session:
         yield session
-    finally:
-        session.close()
 
-def get_room_interface(session: Session = Depends(get_db)) -> DBInterface:
-    return DBInterface(session, DBRoom)
+SessionDep = Annotated[Session, Depends(get_session)]
 
-@router.get("/", response_model=list[Room])
-def read_all_rooms(data_interface: DBInterface = Depends(get_room_interface)):
-    return room_ops.read_all_rooms(data_interface)
+def get_room_service(session: SessionDep) -> RoomService:
+    return RoomService(rooms=SqlModelRoomRepository(session), new_id=lambda: str(uuid4()))
+
+RoomServiceDep = Annotated[RoomService, Depends(get_room_service)]
 ```
 
-This keeps the wiring in one place (the dependency provider functions) and makes testing easier via dependency overrides.
+```python
+# api/routers/rooms.py
+@router.get("", response_model=list[RoomOut])
+def list_rooms(service: RoomServiceDep) -> list[RoomOut]:
+    return [RoomOut.from_domain(room) for room in service.list_rooms()]
+```
+
+This keeps the wiring in one place (the dependency provider functions) and makes testing easier via `app.dependency_overrides`.
 
 ### Open-Closed Principle
 

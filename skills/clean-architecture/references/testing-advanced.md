@@ -1,6 +1,6 @@
 # Advanced Testing
 
-Beyond the stub-based unit testing in `testable-api.md`, this file covers pytest organization, property-based testing with Hypothesis, model-based (stateful) testing, and code coverage philosophy.
+Beyond the per-layer testing strategy in `testing-strategy.md` (domain unit tests, service tests with in-memory fakes, repository integration tests, API tests), this file covers pytest organization, property-based testing with Hypothesis, model-based (stateful) testing, and code coverage philosophy.
 
 ---
 
@@ -8,24 +8,32 @@ Beyond the stub-based unit testing in `testable-api.md`, this file covers pytest
 
 ### Project Structure
 
-Mirror the source folder structure in your tests folder:
+Organize tests by test type, mirroring the architecture layers:
 
 ```
-src/
-  routers/
-    customers.py
-  operations/
-    customers.py
-  db/
-    database.py
+src/<package>/
+  domain/
+    booking.py
+  services/
+    booking_service.py
+  repositories/
+    bookings.py                      # port Protocol (no tests of its own)
+  infrastructure/
+    sqlmodel_repositories.py
+  api/
+    routers/bookings.py
 tests/
-  routers/
-    test_customers.py
-  operations/
-    test_customers.py
-  db/
-    test_database.py
+  fakes.py                           # in-memory implementations of the ports
   conftest.py
+  unit/
+    test_booking.py                  # domain
+    test_booking_service.py          # services, with fakes
+  integration/
+    conftest.py                      # real engine / session fixture
+    test_sqlmodel_repositories.py    # repository implementations
+  api/
+    conftest.py                      # TestClient + app factory
+    test_bookings_api.py
 ```
 
 ### Naming Conventions
@@ -54,22 +62,29 @@ Shared test setup goes in `conftest.py`. Pytest auto-discovers it — no imports
 # tests/conftest.py
 import pytest
 
-@pytest.fixture
-def sample_customer() -> dict:
-    return {"id": "cust-1", "name": "Jane Doe", "email": "jane@example.com"}
+from tests.fakes import InMemoryBookingRepository, InMemoryRoomRepository
 
 @pytest.fixture
-def db_stub() -> DataInterfaceStub:
-    return DataInterfaceStub()
+def room() -> Room:
+    return Room(id="r1", number="101", capacity=2, nightly_rate=Decimal("120.00"))
+
+@pytest.fixture
+def bookings() -> InMemoryBookingRepository:
+    return InMemoryBookingRepository()
+
+@pytest.fixture
+def booking_service(room: Room, bookings: InMemoryBookingRepository) -> BookingService:
+    return BookingService(InMemoryRoomRepository([room]), bookings, new_id=lambda: "b1")
 ```
 
 **Usage in tests:**
 
 ```python
-def test_get_customer(db_stub, sample_customer):
-    db_stub.create(sample_customer)
-    result = operations.get_by_id("cust-1", db_stub)
-    assert result["name"] == "Jane Doe"
+def test_book_room_persists_booking(booking_service, bookings):
+    booking = booking_service.book_room(
+        BookRoom("r1", "Jane Doe", StayPeriod(date(2025, 3, 1), date(2025, 3, 3)))
+    )
+    assert bookings.get("b1") == booking
 ```
 
 ### `@pytest.mark.parametrize`
@@ -98,7 +113,7 @@ Instead of testing specific examples, test **properties** that should hold for a
 ### Installation
 
 ```bash
-pip install hypothesis
+uv add --dev hypothesis
 ```
 
 ### Basic Usage
@@ -247,8 +262,8 @@ TestOrder = OrderStateMachine.TestCase
 Coverage tracks which lines of code were **executed** during tests — not whether they were **correctly validated**.
 
 ```bash
-pip install pytest-cov
-pytest --cov=src --cov-report=html tests/
+uv add --dev pytest-cov
+uv run pytest --cov=src --cov-report=html tests/
 ```
 
 ### Why 100% Coverage Misleads
@@ -364,75 +379,76 @@ def test_multiply_three():
 ```
 
 ```bash
-pip install mutmut
-mutmut run --paths-to-mutate=src/
+uv add --dev mutmut
+uv run mutmut run --paths-to-mutate=src/
 ```
 
 ---
 
 ## API Testing with FastAPI
 
-### In-Memory SQLite for Tests
+### In-Memory SQLite via the App Factory
 
-Replace the production database with an in-memory SQLite database using FastAPI's dependency override:
+Build a fresh app per test with an in-memory SQLite URL. The app factory's lifespan creates the engine and tables, so no global state is shared between tests:
 
 ```python
-from sqlalchemy import create_engine, StaticPool
-from sqlalchemy.orm import sessionmaker
+# tests/api/conftest.py
 from fastapi.testclient import TestClient
-from main import app, get_db, Base
 
-engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
-TestingSessionLocal = sessionmaker(bind=engine)
+from hotel.api.app import create_app
+from hotel.infrastructure.settings import Settings
 
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-app.dependency_overrides[get_db] = override_get_db
-client = TestClient(app)
+@pytest.fixture
+def client() -> Iterator[TestClient]:
+    app = create_app(Settings(database_url="sqlite://"))
+    with TestClient(app) as client:   # runs lifespan → creates engine + tables
+        yield client
 ```
-
-### Setup and Teardown with Fixtures
 
 ```python
-@pytest.fixture(autouse=True)
-def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+def test_book_room_returns_201(client: TestClient) -> None:
+    room = client.post("/rooms", json={"number": "101", "capacity": 2, "nightly_rate": "100.00"}).json()
+    body = {"room_id": room["id"], "guest_name": "Ada", "check_in": "2025-03-01", "check_out": "2025-03-03"}
 
-def test_create_item():
-    response = client.post("/items", json={"name": "Widget", "description": "A widget"})
-    assert response.status_code == 200
-    data = response.json()
-    assert data["name"] == "Widget"
-    assert "id" in data
+    response = client.post("/bookings", json=body)
 
-def test_read_nonexistent_item():
-    response = client.get("/items/999")
-    assert response.status_code == 404
+    assert response.status_code == 201
+    assert response.json()["total_price"] == "200.00"
+
+
+def test_unknown_booking_returns_404(client: TestClient) -> None:
+    assert client.get("/bookings/does-not-exist").status_code == 404
 ```
 
-### Test Operations Directly (Not Through Routes)
+### Overriding Dependencies
 
-When operations are separated from routes, test them without HTTP:
+To test an endpoint without a database, override the service provider from `api/dependencies.py` with one built on in-memory fakes:
 
 ```python
-def test_create_item_operation(session):
-    item = db_create_item(session, name="Widget", description="A widget")
-    assert item.name == "Widget"
+app.dependency_overrides[get_booking_service] = lambda: BookingService(
+    InMemoryRoomRepository([room]), InMemoryBookingRepository(), new_id=lambda: "b1"
+)
 ```
 
-This is simpler than going through the HTTP client and tests only the database logic.
+### Test Services Directly (Not Through Routes)
+
+Because services are separated from routes and depend only on ports, test the business behavior without HTTP and without a database:
+
+```python
+def test_book_room_rejects_overlap(booking_service: BookingService) -> None:
+    booking_service.book_room(BookRoom("r1", "Ada", StayPeriod(date(2025, 3, 1), date(2025, 3, 3))))
+
+    with pytest.raises(RoomUnavailable):
+        booking_service.book_room(BookRoom("r1", "Bob", StayPeriod(date(2025, 3, 2), date(2025, 3, 5))))
+```
+
+This is faster and more focused than going through the HTTP client. Keep API tests for status codes, schemas and error mapping, and test SQL in repository integration tests.
 
 ---
 
 ## Relationship to Other Testing Approaches
 
-- **`testable-api.md`** covers stub-based unit testing with `DataInterfaceStub` — the foundation for testing operations without a database
-- **Property-based testing** complements stubs: use stubs for isolation, Hypothesis for input variety
+- **`testing-strategy.md`** covers what to test at each layer, with in-memory fakes for service tests — the foundation for testing use cases without a database
+- **Property-based testing** complements fakes: use fakes for isolation, Hypothesis for input variety (domain value objects such as `StayPeriod` are ideal targets)
 - **Model-based testing** is most valuable for stateful systems (orders, workflows, state machines from `patterns/state.md`)

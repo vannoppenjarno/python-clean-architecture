@@ -1,269 +1,186 @@
 ---
 name: Python Clean Architecture
-description: This skill should be used when the user asks to "scaffold a FastAPI project", "set up clean architecture", "refactor to clean architecture", "add a new endpoint", "add a router", "add an operation", "add a repository", "review my code structure", "apply design patterns in Python", "decouple my code", "improve code quality", "make my code testable", or mentions layered architecture, dependency injection, Protocol-based design, or Pythonic design patterns for Python/FastAPI projects.
-version: 0.9.0
+description: This skill should be used when the user asks to "scaffold a Python project", "scaffold a FastAPI project", "set up clean architecture", "refactor to clean architecture", "add a use case", "add a service", "add an endpoint", "add a repository", "review my code structure", "apply design patterns in Python", "decouple my code", "improve code quality", "make my code testable", or mentions layered architecture, ports and adapters, dependency inversion, dependency injection, Protocol-based design, uv/pyproject project setup, or Pythonic design patterns for Python projects (with or without FastAPI, Pydantic or SQLModel).
+version: 1.0.0
 ---
 
 # Python Clean Architecture
 
-Provide Clean Architecture guidance for Python projects, specifically FastAPI APIs. Based on seven core design principles, Pythonic implementations of classic patterns, and a three-layer architecture (Routers → Operations → Database).
+A reusable engineering standard for Python repositories. It covers how to structure code so business logic sits at the center, frameworks stay at the edges, and every part is testable. It applies to any Python project. Do not assume one project's structure for every repository.
 
-> **Attribution:** The principles, patterns, and architectural approach in this skill are inspired by and synthesized from [Arjan Codes](https://www.arjancodes.com/)' courses: *The Software Designer Mindset*, *Pythonic Patterns*, and *Complete Extension*. The specific Pythonic framing (Protocol-based DI, functional pattern progression, three-layer FastAPI architecture) originates from his teaching. This plugin distills those principles into actionable guidance for Claude Code — it is not a reproduction of course content. See also: [github.com/arjancodes](https://github.com/arjancodes) | [youtube.com/arjancodes](https://www.youtube.com/arjancodes).
+> **Attribution:** Many of the design principles and Pythonic pattern implementations come from [Arjan Codes](https://www.arjancodes.com/)' courses (*The Software Designer Mindset*, *Pythonic Patterns*). This standard adapts them and is not a reproduction of course content.
 
-## When to Apply
+## The Dependency Rule
 
-- Scaffolding new FastAPI projects with clean separation of concerns
-- Refactoring existing Python code to reduce coupling and increase cohesion
-- Adding new components (endpoints, operations, repositories, models)
-- Reviewing code for design quality and Pythonic idiom adherence
-- Making code testable through dependency injection and Protocol-based abstractions
-
-## Core Architecture: Three Layers
-
-Every FastAPI project follows a strict three-layer dependency flow:
+Source code dependencies point **inward only**:
 
 ```
-Routers (API layer)  →  Operations (business logic)  →  Database (persistence)
+Infrastructure / frameworks / database      (SQLModel, HTTP clients, files, queues)
+    ↓
+Adapters / interfaces                       (FastAPI routers, CLI, repository implementations)
+    ↓
+Services / use cases                        (application logic, orchestration)
+    ↓
+Domain                                      (entities, value objects, business rules)
 ```
 
-Each layer depends ONLY on the layer below it. Never skip layers.
+- **Domain** is the core. It imports nothing from frameworks, databases, HTTP, FastAPI, SQLModel or Pydantic. It uses only plain Python: dataclasses, enums, the standard library, and its own exceptions.
+- **Services** implement use cases. They orchestrate domain objects and talk to the outside world only through **ports**, which are `Protocol`s defined on the inner side. They never contain SQL, ORM queries, sessions or HTTP concepts.
+- **Adapters** translate between the outside world and the services: a FastAPI router, a CLI command, or a repository implementation.
+- **Infrastructure** holds the concrete technology: database engine and session, SQLModel tables, external API clients, settings.
+- An outer layer may import an inner layer. An inner layer never imports an outer one.
 
-### Layer Responsibilities
+Typical request flow:
 
-**Routers** — HTTP interface. Accept requests, call operations, return responses. No business logic. Act as the composition root where concrete implementations are injected.
-
-**Operations** — Business logic. Accept a `DataInterface` (Protocol) parameter for data access. Compute derived values, enforce rules, orchestrate workflows. Never import database modules directly.
-
-**Database** — Persistence. Implement the `DataInterface` Protocol using SQLAlchemy, file storage, or any backend. Expose `read_by_id`, `read_all`, `create`, `update`, `delete` methods. Return `DataObject = dict[str, Any]` to decouple from ORM models.
-
-### The DataInterface Protocol
-
-```python
-from typing import Any, Protocol
-
-DataObject = dict[str, Any]
-
-class DataInterface(Protocol):
-    def read_by_id(self, id: str) -> DataObject: ...
-    def read_all(self) -> list[DataObject]: ...
-    def create(self, data: DataObject) -> DataObject: ...
-    def update(self, id: str, data: DataObject) -> DataObject: ...
-    def delete(self, id: str) -> None: ...
+```
+HTTP request
+  → FastAPI router (adapter: validate input, map to domain/command)
+  → service / use case
+  → domain (rules, calculations, invariants)
+  → repository port (Protocol, defined inside)
+  → concrete repository (SQLModel/SQL/HTTP implementation, outside)
 ```
 
-Operations accept `data_interface: DataInterface` as a parameter. The router passes the concrete implementation. This is dependency injection — no ABC inheritance needed.
+## Layer Rules
 
-### Pydantic Models
-
-Define separate Create and Read models per entity:
-
-```python
-class CustomerCreate(BaseModel):
-    name: str
-    email: str
-
-class Customer(BaseModel):
-    id: str
-    name: str
-    email: str
-```
-
-Use `**data.model_dump()` to unpack Pydantic models into DataObject dicts. Use `exclude_none=True` on update models for partial updates.
-
-## Seven Design Principles
-
-When writing or reviewing code, apply these principles in order of priority:
-
-1. **High Cohesion** — Each class/function has a single responsibility. Extract class when a class does two things. Extract function when a function does two things.
-2. **Low Coupling** — Minimize dependencies. Move methods to the class that owns the data (Information Expert). Pass only what a function needs.
-3. **Depend on Abstractions** — Use `Protocol` for structural typing and `Callable` type aliases for function injection. Patterns emerge from good abstraction.
-4. **Composition over Inheritance** — Extract shared behavior into standalone classes with a Protocol interface. Use `list[PaymentSource]` patterns. Never use mixins.
-5. **Separate Creation from Use** — One composition root (the router or main function). Dictionary mapping over if/elif chains. Creator functions for complex construction.
-6. **Start with the Data** — Fix data structures first; methods and layers follow. Extract domain classes from prefixed fields. Eliminate parallel lists.
-7. **Keep Things Simple** — DRY (but avoid hasty abstractions). KISS (simplest design that works). YAGNI (implement only what is needed now).
-
-## Pythonic Pattern Selection
-
-When encountering these code smells, apply the corresponding pattern:
-
-| Code Smell | Pattern | Pythonic Implementation |
+| Layer | Owns | Must NOT |
 |---|---|---|
-| Long if/elif switching behavior | Strategy | `Callable` type alias, pass functions as args |
-| Need to create objects from config/JSON | Registry | `dict[str, Callable]` mapping + `**kwargs` unpacking |
-| Event/notification side effects mixed with core logic | Notification (Pub/Sub) | `subscribe(event, handler)` / `post_event(event, data)` dict-based |
-| Duplicated algorithm across classes | Template Method | Extract to free function + Protocol parameter |
-| Two independent hierarchies that vary | Bridge | `Callable` type alias replaces abstract reference |
-| Need undo/batch/queue operations | Command | Functions returning undo closures |
-| Object creation coupled to usage | Abstract Factory | Tuples of functions + `functools.partial` |
-| Sequential data transformations | Pipeline | `functools.reduce` for composition, or framework `.pipe()` |
-| Need to react to events without coupling | Callback | Function passed as argument, called when event occurs |
-| Reusing a function with a different interface | Function Wrapper | Calls another function, translates its arguments |
-| Separating configuration from usage | Function Builder | Higher-order function returns a configured function |
-| Bare primitives for domain concepts (prices, emails) | Value Objects | Subclass built-in types with `__new__` validation, or frozen dataclass |
-| Need audit trail, temporal queries, or event replay | Event Sourcing | Immutable `Event[T]`, append-only `EventStore[T]`, projection functions |
-| Read/write patterns diverge; list views compute derived fields | CQRS | Separate write model + read projection, projector function after writes |
-| Complex object with many optional parts | Builder | Fluent API with `Self` return type, `.build()` returns frozen product |
-| Multiple DB writes that must succeed or fail together | Unit of Work | Context manager wrapping transaction: commit on success, rollback on error |
-| Need exactly one instance of a shared resource | Singleton | Module-level instance (preferred), or metaclass with `_instances` dict |
-| Object behaves differently depending on internal state | State | Protocol-based state objects, context delegates to current state |
-| Incompatible interface from external library | Adapter | Protocol interface + `functools.partial` for single-method adaptation |
-| Client coupled to complex subsystem details | Facade | Simplified interface class, `functools.partial` to bind dependencies |
-| Transient failures in external API/DB calls | Retry | `@retry` decorator with exponential backoff, fallback strategies |
-| Slow startup loading unused resources | Lazy Loading | `functools.cache`, TTL cache, generators, background preloading |
-| Data access logic mixed into domain classes | Repository | Protocol interface for CRUD, concrete implementations per backend |
-| Sequential operations on an object are verbose and error-prone | Fluent Interface | Methods return `self` for chaining, domain-specific verbs |
-| Need extensibility without modifying core code | Plugin Architecture | Config-driven creation, `importlib` auto-discovery, self-registering modules |
+| Domain | Entities, value objects, domain exceptions, pure business rules | Import frameworks, ORM, Pydantic, I/O; know about persistence or HTTP |
+| Services | Use cases, orchestration, non-repository ports (`services/ports.py`: clock, ID factory, external gateways) | Contain SQL/ORM code, raise `HTTPException`, instantiate concrete infrastructure |
+| Repositories (ports) | Domain-specific `Protocol` interfaces such as `BookingRepository` | Expose ORM types or generic `dict[str, Any]` payloads |
+| Infrastructure | SQLModel tables, sessions, repository implementations, external clients, settings | Contain business rules |
+| API / adapters | Routers, request/response schemas (Pydantic), error → status mapping, composition root | Contain business rules or persistence logic |
 
-### Default preferences for all patterns:
+The rules that matter most:
 
-- **Protocol over ABC** — unless shared state in the superclass is needed
-- **`functools.partial`** — to configure generic functions rather than creating wrapper classes
-- **Closures** — to separate configuration-time args from runtime args
-- **Don't go full functional** — find the happy medium; readability is the ultimate arbiter
+1. **Define ports where they are used.** Repository and external-service interfaces live on the inner side. Implementations live outside.
+2. **Prefer domain-specific ports over generic CRUD.** Write `bookings.find_overlapping(room_id, period)`, not `repo.read_all()` followed by filtering. Add only the methods your use cases call.
+3. **Prefer strong types over `dict[str, Any]`.** Pass domain objects, value objects, dataclasses or typed commands between layers. Untyped dicts are acceptable only at the outermost boundary, for example raw JSON before validation.
+4. **Map at the boundary.** Pydantic schemas map to and from domain objects in the API layer. SQLModel tables map to and from domain objects in the repository implementation. Neither leaks inward.
+5. **One composition root.** Concrete implementations are created and wired in one place: FastAPI dependency providers, `main()`, or a `bootstrap` module. Services receive their dependencies through the constructor or as parameters.
 
-## Scaffolding a New Project
+Full detail with code: `references/layered-architecture.md`.
 
-When asked to create a new FastAPI project, generate this structure:
+## Pragmatism: Scale the Structure to the Problem
+
+Layers are a tool, not a religion. Choose the smallest structure that keeps the dependency rule intact:
+
+| Project shape | Recommended structure |
+|---|---|
+| Script / one-off tool (< ~300 lines, no persistence) | Single module. Keep pure logic in functions separate from I/O in `main()`. |
+| Small CLI or library | `src/<package>/` with a few cohesive modules (e.g. `models.py`, `logic.py`, `io.py`). Introduce a `Protocol` only where tests need a fake. |
+| Normal application or service | The full recommended layout below. |
+| Large or multi-domain system | Split by bounded context first (`src/<package>/<context>/`), with the layer folders inside each context. |
+
+Recommended layout for a normal application:
 
 ```
-project_name/
-├── main.py                    # FastAPI app, include_router, lifespan handler
-├── routers/
-│   ├── __init__.py
-│   └── {entity}.py            # APIRouter, endpoint functions
-├── operations/
-│   ├── __init__.py
-│   ├── interface.py           # DataInterface Protocol + DataInterfaceStub
-│   └── {entity}.py            # Business logic functions
-├── db/
-│   ├── __init__.py
-│   ├── database.py            # Engine, SessionLocal, Base
-│   ├── db_interface.py        # Generic DBInterface class
-│   └── models.py              # SQLAlchemy models
-├── models/
-│   ├── __init__.py
-│   └── {entity}.py            # Pydantic Create/Read models
-├── tests/
-│   └── test_{entity}.py       # Tests using DataInterfaceStub
-├── requirements.txt
-└── .gitignore
+src/<package>/
+    domain/            # entities, value objects, domain exceptions, pure rules
+    services/          # use cases; depend on ports only
+    repositories/      # port Protocols (domain-specific interfaces)
+    infrastructure/    # db engine/session, SQLModel tables, repo implementations, clients, settings
+    api/               # FastAPI app, routers, Pydantic schemas, dependency wiring
+tests/
+    unit/              # domain + services (fakes for ports)
+    integration/       # repository implementations against a real/ephemeral DB
+    api/               # HTTP-level tests via TestClient
 ```
 
-## Testing Strategy
+Leave out folders the project doesn't need. A project without HTTP has no `api/`. A project without persistence has no `infrastructure/db`. Add a layer when it removes real pain, not ahead of time.
 
-Create a `DataInterfaceStub` base class that stores data in a plain dict. Override specific methods in test-specific subclasses. Pass the stub to operations functions — no database needed.
+## Default Python Stack
 
-```python
-from typing import Any
+| Concern | Default | Add only when |
+|---|---|---|
+| Environment and dependencies | **uv** + `pyproject.toml` (no `requirements.txt`) | always |
+| Layout | `src/` layout, single importable package | always |
+| Testing | **pytest** | always |
+| HTTP API | **FastAPI** (outer adapter) | the project exposes HTTP |
+| Validation/serialization | **Pydantic v2** (boundaries: API schemas, settings, external payloads) | data crosses a boundary that needs validation |
+| Relational persistence | **SQLModel** (infrastructure only) | the project stores relational data |
 
-DataObject = dict[str, Any]
+Do not add FastAPI, SQLModel or Pydantic to a repository that has no need for that concern. Setup details, `pyproject.toml` template and tooling: `references/project-setup.md`.
 
-class DataInterfaceStub:
-    def __init__(self):
-        self.data: dict[str, DataObject] = {}
-    def read_by_id(self, id: str) -> DataObject:
-        if id not in self.data:
-            raise KeyError(f"Not found: {id}")
-        return self.data[id]
-    def read_all(self) -> list[DataObject]:
-        return list(self.data.values())
-    def create(self, data: DataObject) -> DataObject:
-        self.data[data["id"]] = data
-        return data
-    def update(self, id: str, data: DataObject) -> DataObject:
-        if id not in self.data:
-            raise KeyError(f"Not found: {id}")
-        self.data[id].update(data)
-        return self.data[id]
-    def delete(self, id: str) -> None:
-        if id not in self.data:
-            raise KeyError(f"Not found: {id}")
-        del self.data[id]
-```
+## Testing Rules
 
-## Additional Resources
+- **Domain**: plain unit tests. No framework, no database, no fixtures beyond simple objects.
+- **Services**: unit tests with **in-memory fakes** that implement the port Protocols. Prefer fakes over `unittest.mock`.
+- **Repository implementations**: **integration tests** against a real engine, such as SQLite in-memory or a containerized database.
+- **API adapters**: API tests via `fastapi.testclient.TestClient`, overriding the service or repository dependencies where useful.
+- Inject time, IDs and randomness so tests stay deterministic.
 
-### Reference Files
+Details and examples: `references/testing-strategy.md`, `references/testing-advanced.md`.
 
-For detailed guidance beyond this overview, consult:
+## Design Principles
 
-**Architecture & Design:**
-- **`references/design-principles.md`** — Full treatment of the seven design principles with refactoring recipes and code examples
-- **`references/grasp-principles.md`** — GRASP principles: Creator, Information Expert, Controller, Low Coupling, High Cohesion, Polymorphism, Indirection, Protected Variations, Pure Fabrication
-- **`references/domain-driven-design.md`** — Domain-Driven Design: domain models, ubiquitous language, model distillation, code as temporary expression
-- **`references/layered-architecture.md`** — Detailed three-layer architecture guide: DataInterface (Repository pattern), DBInterface, router composition, Pydantic models, to_dict utility
-- **`references/testable-api.md`** — Testing strategy: stub-based testing, DataInterfaceStub, test isolation, no-database testing
-- **`references/testing-advanced.md`** — Pytest organization, property-based testing (Hypothesis), model-based stateful testing, code coverage philosophy
-- **`references/rest-api-design.md`** — HTTP method semantics, status codes, resource naming, pagination, error response format, OpenAPI, versioning
+Apply these when writing or reviewing code, roughly in priority order:
 
-**Python Fundamentals:**
-- **`references/classes-and-dataclasses.md`** — When to use classes vs dataclasses, @dataclass, field(), frozen, encapsulation
-- **`references/function-design.md`** — Pure functions, higher-order functions, closures, functools.partial, classes vs functions vs modules
-- **`references/data-structures.md`** — Choosing list vs dict vs tuple vs set, enums, performance trade-offs
-- **`references/types-and-type-hints.md`** — Python's type system, Callable types, nominal vs structural typing, best practices
-- **`references/error-handling.md`** — Custom exceptions, context managers, error handling layers, anti-patterns
-- **`references/code-quality.md`** — 22 code quality rules: naming, nesting, flags, type abuse, isinstance dispatch, overloaded classes, and code review checklist
-- **`references/project-organization.md`** — Modules, packages, imports, folder structure, avoid "utils" anti-pattern
-- **`references/context-managers.md`** — Context manager protocol, `__enter__`/`__exit__`, `@contextmanager`, `ExitStack`, async context managers
-- **`references/decorators.md`** — Decorator patterns: retry with backoff, logging, timing, `functools.wraps`, parameterized decorators
-- **`references/async-patterns.md`** — Async/await for FastAPI: coroutines, `asyncio.gather`, `TaskGroup`, async context managers, async generators, async DataInterface
-- **`references/pydantic-validation.md`** — Pydantic v2 validators: `@field_validator`, `@model_validator`, `Field()` constraints, `ConfigDict`, serializers, special types
-- **`references/pattern-matching.md`** — Structural pattern matching (`match`/`case`): literal, capture, OR, sequence, class, mapping patterns, guard clauses
+1. **High cohesion.** Each module, class or function has one responsibility.
+2. **Low coupling.** Minimize what each unit knows about others. Pass only what is needed.
+3. **Depend on abstractions (dependency inversion).** Use `Protocol` for architectural boundaries and `Callable` aliases for single-behavior dependencies. The consumer owns the abstraction.
+4. **Composition over inheritance.** Build behavior from collaborating objects. Use no mixins and keep hierarchies shallow. Use an ABC only when shared implementation genuinely belongs in a base class.
+5. **Separate creation from use.** Wire concrete objects in the composition root and nowhere else.
+6. **Start with the data.** Model the domain types first, and behavior follows the data (Information Expert).
+7. **Keep it simple: KISS, YAGNI, sensible DRY.** Build only what is needed now. Avoid hasty abstractions.
 
-**Pythonic Patterns:**
-- **`references/pythonic-patterns.md`** — Quick reference lookup table for all 25 patterns (use for reviews and pattern selection)
+Full treatment: `references/design-principles.md`, `references/grasp-principles.md`.
 
-**Pythonic Patterns (full progressions from OOP → functional):**
-- **`references/patterns/strategy.md`** — Callable type alias, closures, functools.partial
-- **`references/patterns/abstract-factory.md`** — Tuples of functions, partial, builder functions
-- **`references/patterns/bridge.md`** — Bound methods as callables, when to stop going functional
-- **`references/patterns/command.md`** — Functions returning undo closures, batch via list comprehension
-- **`references/patterns/notification.md`** — Observer, Mediator, and Pub/Sub with dict-based subscribe/post_event
-- **`references/patterns/registry.md`** — Dict mapping + **kwargs unpacking, self-registering plugins via importlib
-- **`references/patterns/template-method.md`** — Free function + Protocol parameters, protocol segregation
-- **`references/patterns/pipeline.md`** — Chain of Responsibility, functools.reduce composition, pandas .pipe()
-- **`references/patterns/functional.md`** — Callback, Function Wrapper, Function Builder patterns
-- **`references/patterns/retry.md`** — Exponential backoff, `@retry` decorator, fallback strategies, tenacity library
-- **`references/patterns/lazy-loading.md`** — `functools.cache`, TTL cache, generators, background preloading
-- **`references/patterns/plugin-architecture.md`** — Config-driven plugins, `importlib` auto-discovery, self-registering modules, Protocol conformance
+## Patterns: Only When They Solve a Real Problem
 
-**Architectural & Domain Patterns:**
-- **`references/patterns/repository.md`** — Repository pattern: separating data storage from data access, relationship to DataInterface
-- **`references/patterns/fluent-interface.md`** — Method chaining with `return self`, domain-specific verbs, when to use vs Builder
-- **`references/patterns/value-objects.md`** — Wrapping primitives in validated domain types: Price, Percentage, EmailAddress
-- **`references/patterns/event-sourcing.md`** — Immutable events, EventStore[T], projections, cache invalidation
-- **`references/patterns/cqrs.md`** — Separate read/write models, command handlers, projector functions
-- **`references/patterns/builder.md`** — Fluent API with Self return type, mutable builder to immutable product
-- **`references/patterns/unit-of-work.md`** — Transaction context managers, automatic rollback, repository composition
-- **`references/patterns/singleton.md`** — Module-level instance (preferred), metaclass approach, thread safety
-- **`references/patterns/state.md`** — Protocol-based state objects, context delegation, state transitions
-- **`references/patterns/adapter.md`** — Object adapter (composition), function adapter (partial), Protocol interface
-- **`references/patterns/facade.md`** — Simplified interface to complex subsystems, partial for controller binding
+Do not introduce a design pattern because it exists. Before adding an abstraction or pattern, name the concrete problem it solves, such as a second implementation, a test seam, a growing `if/elif` chain, or a transaction boundary. If you can't name one, write the straightforward code.
 
-**Advanced Error Handling:**
-- **`references/monadic-error-handling.md`** — Railway-oriented programming: Result types, `@safe` decorator, `flow()`/`bind()` composition (functional alternative to exceptions)
+| Symptom you actually have | Consider | Pythonic form |
+|---|---|---|
+| Growing `if/elif` selecting behavior | Strategy | `Callable` alias, dict of functions |
+| Creating objects from config/JSON | Registry | `dict[str, Callable]` + `**kwargs` |
+| Persistence logic mixed into domain/services | Repository | Domain-specific `Protocol` + implementation in infrastructure |
+| Several writes must succeed/fail together | Unit of Work | Context manager owning the session/transaction |
+| Third-party API doesn't fit your port | Adapter | Class implementing your Protocol, wrapping the client |
+| Bare primitives for domain concepts | Value Object | Frozen dataclass with validation |
+| Side effects tangled with core logic | Notification / events | Domain events + handlers wired at the root |
+| Transient external failures | Retry | Decorator with backoff at the adapter boundary |
+| Object behavior depends on its state | State | Protocol-based state objects |
 
-### Example Files
+Defaults: `Protocol` over ABC, `functools.partial` and closures over wrapper classes, and readability over functional purity. The complete table and full pattern write-ups are in `references/pythonic-patterns.md` and `references/patterns/`.
 
-- **`examples/fastapi-hotel-api/`** — Complete working FastAPI project demonstrating all patterns: rooms and bookings with computed prices
+## Review Checklist (Quick)
 
-#### Intentional Upgrades from Source Transcript
+- [ ] Domain imports no framework, ORM, Pydantic or I/O module
+- [ ] Services depend on Protocols, not concrete repositories or clients
+- [ ] No SQL, ORM session or query code outside `infrastructure/`
+- [ ] No `HTTPException` or HTTP status codes outside `api/`
+- [ ] Ports are domain-specific and typed, with no `dict[str, Any]` CRUD contracts
+- [ ] Concrete wiring lives in one composition root
+- [ ] Structure is proportional to project size, with no empty ceremonial layers
+- [ ] Every abstraction or pattern has a stated reason
+- [ ] Domain and services are unit-tested without a database. Repositories have integration tests.
 
-The example code applies the same architectural principles taught in the Arjan Codes course but modernizes several implementation details. Each file documents its specific upgrades in its module docstring. Summary of deliberate changes:
+## Reference Files
 
-| Category | Transcript (original) | Example (upgraded) | Rationale |
-|---|---|---|---|
-| **IDs** | Integer, autoincrement | String UUID (`uuid.uuid4()`) | App-generated, portable across databases |
-| **SQLAlchemy** | Legacy 1.x (`declarative_base()`, `session.query()`) | 2.0 style (`DeclarativeBase`, `session.get()`, `select()`) | Current best practice, forward-compatible |
-| **Pydantic models** | `@dataclass` + raw dicts | `BaseModel` with Create/Update/Read variants | FastAPI native, automatic validation & serialization |
-| **Startup** | `@app.on_event("startup")` | `lifespan` context manager | `on_event` is deprecated in modern FastAPI |
-| **Test framework** | `unittest.TestCase` | `pytest` functions | Simpler, more Pythonic, industry standard |
-| **Stub pattern** | `NotImplementedError` base, subclass per test | Full in-memory dict implementation | Directly usable without boilerplate subclasses |
-| **Error handling** | None (silent None returns) | `KeyError` + `HTTPException(404)` | Production-ready error responses |
-| **Router config** | Bare `APIRouter()` | `prefix=`, `tags=`, `response_model`, status codes | OpenAPI docs, proper HTTP semantics |
-| **Customer model** | `first_name`/`last_name`/`email_address` | `name`/`email` | Simplified for example clarity |
-| **Table names** | Singular (`"room"`) | Plural (`"rooms"`) | SQL naming convention |
-| **Session mgmt** | Global `db_session` in DBInterface | Injected via constructor parameter | Better dependency injection |
-| **Package** | `hotel.*` top-level package | Flat imports | Standalone example clarity |
+**Architecture and structure**
+- `references/layered-architecture.md`: layers, ports, mapping, composition root, request flow, full code
+- `references/project-setup.md`: uv, `pyproject.toml`, `src/` layout, tooling, scaling down
+- `references/project-organization.md`: modules, packages, imports, layer-first vs context-first
+- `references/dependency-injection.md`: DI vs DIP, Protocols, composition root, FastAPI `Depends`
+- `references/domain-modeling.md`, `references/domain-driven-design.md`: modeling the core
+- `references/design-principles.md`, `references/grasp-principles.md`: principles with refactoring recipes
+- `references/rest-api-design.md`: HTTP conventions for the API adapter
 
-The core architecture (three-layer separation, `DataInterface` Protocol, dependency injection via router composition root, operations decoupled from database) is faithfully preserved.
+**Testing**
+- `references/testing-strategy.md`: what to test at each layer, fakes, integration and API tests
+- `references/testing-advanced.md`: pytest organization, Hypothesis, stateful testing, coverage
+
+**Python craft**
+- `references/types-and-type-hints.md`, `references/classes-and-dataclasses.md`, `references/function-design.md`, `references/data-structures.md`
+- `references/error-handling.md`, `references/monadic-error-handling.md`, `references/context-managers.md`, `references/decorators.md`
+- `references/async-patterns.md`, `references/pydantic-validation.md`, `references/pattern-matching.md`
+- `references/code-quality.md`, `references/code-smells.md`, `references/refactoring-case-studies.md`
+
+**Patterns**
+- `references/pythonic-patterns.md`: lookup table of all patterns
+- `references/patterns/*.md`: one file per pattern (repository, unit-of-work, adapter, strategy, registry, value-objects, …)
+
+## Example
+
+- `examples/fastapi-hotel-api/`: a small uv/`src`-layout service showing a domain with rules, services that depend on ports, SQLModel repositories in infrastructure, a FastAPI adapter with a composition root, and unit, integration and API tests.

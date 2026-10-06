@@ -400,7 +400,7 @@ class UnitOfWork:
 
 **Recognize:** Need exactly one instance of a resource (config, connection pool, model loader).
 
-**Preferred approach:** Dependency injection — pass the resource as an explicit parameter, create it in the composition root (`main()` or router layer). When DI creates excessive parameter-passing overhead, a module-level instance is an acceptable fallback:
+**Preferred approach:** Dependency injection — pass the resource as an explicit parameter, create it in the composition root (`main()` or the FastAPI dependency providers in `api/dependencies.py`). When DI creates excessive parameter-passing overhead, a module-level instance is an acceptable fallback:
 
 ```python
 # PREFERRED: dependency injection
@@ -499,15 +499,18 @@ power_fn = partial(power_speaker, facade)  # Callable[[bool], None]
 
 **Recognize:** Data access logic (SQL queries, file I/O) is mixed into domain classes. Changing storage requires modifying business logic.
 
-**Pythonic implementation:** Protocol interface for CRUD operations, concrete implementations per storage backend, in-memory stub for testing. The three-layer architecture's `DataInterface` + `DBInterface` is this pattern:
+**Pythonic implementation:** One domain-specific `Protocol` per aggregate, defined on the inner side (`repositories/`), speaking in domain types and exposing only the methods the use cases need. The concrete implementation (e.g. SQLModel) lives in `infrastructure/`; an in-memory fake lives in `tests/fakes.py`. Avoid a generic `dict[str, Any]` CRUD interface as the default:
 
 ```python
-class PostRepository(Protocol):
-    def get(self, post_id: str) -> Post: ...
-    def get_all(self) -> list[Post]: ...
-    def add(self, post: Post) -> None: ...
-    def update(self, post: Post) -> None: ...
-    def delete(self, post_id: str) -> None: ...
+# repositories/bookings.py
+class BookingRepository(Protocol):
+    def add(self, booking: Booking) -> None: ...
+    def get(self, booking_id: str) -> Booking | None: ...
+    def find_overlapping(self, room_id: str, period: StayPeriod) -> list[Booking]: ...
+    def remove(self, booking_id: str) -> None: ...
+
+# infrastructure/sqlmodel_repositories.py → class SqlModelBookingRepository (maps rows ↔ Booking)
+# tests/fakes.py                          → class InMemoryBookingRepository
 ```
 
 → Full reference: `patterns/repository.md`

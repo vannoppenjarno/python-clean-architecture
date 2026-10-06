@@ -8,7 +8,7 @@ Review the REST API design at `$ARGUMENTS` (or the current working directory if 
 
 ## Process
 
-1. **Read the code** — Find and read ALL Python files in the target path recursively. Focus on router/endpoint files, Pydantic models, and main.py.
+1. **Read the code** — Find and read ALL Python files in the target path recursively. Focus on router/endpoint files, Pydantic request/response schemas, and the app factory or entry module (e.g. `api/app.py`, `main.py`).
 
 2. **Check HTTP method semantics** — Verify each endpoint uses the correct method:
    - `GET` — Read-only, no side effects, cacheable

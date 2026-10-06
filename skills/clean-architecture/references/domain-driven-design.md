@@ -24,7 +24,7 @@ The domain model is not code. It is the shared understanding of what the system 
 
 Start with a crude prototype — a tangible starting point you can iterate on. Don't spend months on requirements before writing code. Having a working prototype lets you discover problems and refine the domain model simultaneously.
 
-This aligns with the three-layer architecture approach: scaffold a minimal FastAPI project with one entity, then iterate.
+This aligns with the layered architecture approach (`layered-architecture.md`): start with one entity and one use case (a domain object, a service, a repository port and its implementation, one endpoint), then iterate. Keep the structure small until the domain proves it needs more.
 
 ### 2. Cultivate a Ubiquitous Language
 
@@ -32,7 +32,7 @@ Develop a shared vocabulary between developers and domain experts (customers, st
 
 ```
 Domain expert says:  "A booking has a check-in date and a check-out date"
-Developer models:    BookingCreate(from_date: date, to_date: date)
+Developer models:    StayPeriod(check_in: date, check_out: date)
 ```
 
 If the developer calls it `start_date` / `end_date` while the domain expert says "check-in" / "check-out", misunderstandings will creep in. The code should use the language of the domain.
@@ -88,17 +88,21 @@ This means:
 
 ---
 
-## DDD in the Three-Layer Architecture
+## DDD in the Layered Architecture
 
-The three-layer architecture naturally supports DDD thinking:
+The layered architecture (`layered-architecture.md`) gives each DDD concept a clear home:
 
-| DDD Concept | Three-Layer Implementation |
+| DDD Concept | Where it lives |
 |---|---|
-| Domain Model | Pydantic models in `models/` |
-| Domain Behavior | Operations functions in `operations/` |
-| Repository | `DataInterface` Protocol + `DBInterface` |
-| Ubiquitous Language | Model field names match domain terms |
-| Bounded Context | Separate entity modules (rooms, bookings, customers) |
+| Entities, Value Objects, Aggregates | Plain dataclasses in `domain/` (e.g. `Room`, `Booking`, `StayPeriod`), no Pydantic or SQLModel |
+| Domain rules / invariants | Methods and `__post_init__` on domain objects (`room.price_for(period)`, `period.overlaps(other)`) |
+| Domain exceptions | `domain/errors.py` (`RoomUnavailable`), with no HTTP meaning |
+| Application services / use cases | `services/` (e.g. `BookingService.book_room(BookRoom)`), orchestrating domain objects through ports |
+| Domain services (logic spanning several entities) | Pure functions or classes in `domain/` when they need no I/O; otherwise in `services/` |
+| Repository | Domain-specific port `Protocol` in `repositories/` (`BookingRepository`) + implementation in `infrastructure/` (`SqlModelBookingRepository`) |
+| Anti-corruption layer | Adapters at the edge: API schemas mapping to/from domain objects in `api/`, external-client adapters mapping foreign payloads in `infrastructure/` |
+| Ubiquitous Language | Class, field and method names match domain terms (`check_in`, `find_overlapping`) |
+| Bounded Context | One package per context (`src/<package>/<context>/`), each with its own layer folders |
 
 ---
 

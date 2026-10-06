@@ -1,77 +1,52 @@
 ---
 name: scaffold-tests
-description: Generate stub-based tests for existing operations using DataInterfaceStub
+description: Generate tests per architecture layer (domain, services with in-memory fakes, repositories, API)
 argument-hint: [path]
 ---
 
-Generate tests for the code at `$ARGUMENTS` (or the current working directory if no path given) using the DataInterfaceStub pattern — no database needed.
+Generate tests for the code at `$ARGUMENTS` (or the current working directory if no path given), organized by architecture layer. Business logic is tested fast and without a database. Infrastructure is tested against a real engine.
 
 ## Process
 
-1. **Read the code** — Find and read ALL Python files in the target path recursively. Identify:
-   - Operations files (business logic functions that accept `DataInterface` or similar Protocol)
-   - Pydantic models (Create, Read, Update models)
-   - Any existing test files (to avoid duplication and match existing test conventions)
+1. **Read the code.** Find and read all Python files in the target path recursively. Classify them:
+   - **Domain**: entities, value objects, pure rules and domain exceptions
+   - **Ports**: `Protocol`s or `Callable` aliases that services depend on (repositories, gateways, clocks, ID factories)
+   - **Services / use cases**: code that orchestrates domain objects through ports
+   - **Repository implementations / clients**: SQLModel/SQLAlchemy/SQL or HTTP code in infrastructure
+   - **API adapters**: FastAPI routers, the app factory, dependency providers, error handlers
 
-2. **Create DataInterfaceStub** — If not already present, generate a `tests/conftest.py` with:
+2. **Detect existing conventions.** Read `pyproject.toml` (pytest config, markers, test paths), `tests/conftest.py`, any `tests/fakes.py` and existing tests. Match their layout (`tests/unit|integration|api` or a flat `tests/`), naming, fixture style and import style (installed package imports such as `from <package>.domain...`, not `sys.path` hacks). Do not duplicate tests that already exist.
 
-   ```python
-   from typing import Any
+   If services create their dependencies internally (sessions, clients, `datetime.now()`, `uuid4()`), they cannot be unit-tested with fakes. Report this and suggest the minimal refactor (inject the dependency, introduce a domain-specific port; see `testing-strategy.md`, section 6). Ask before changing production code.
 
-   DataObject = dict[str, Any]
+3. **Plan tests per layer:**
 
-   class DataInterfaceStub:
-       def __init__(self):
-           self.data: dict[str, DataObject] = {}
-       def read_by_id(self, id: str) -> DataObject:
-           if id not in self.data:
-               raise KeyError(f"Not found: {id}")
-           return self.data[id]
-       def read_all(self) -> list[DataObject]:
-           return list(self.data.values())
-       def create(self, data: DataObject) -> DataObject:
-           self.data[data["id"]] = data
-           return data
-       def update(self, id: str, data: DataObject) -> DataObject:
-           if id not in self.data:
-               raise KeyError(f"Not found: {id}")
-           self.data[id].update(data)
-           return self.data[id]
-       def delete(self, id: str) -> None:
-           if id not in self.data:
-               raise KeyError(f"Not found: {id}")
-           del self.data[id]
-   ```
+   **Domain unit tests** (`tests/unit/`)
+   - Construct objects and assert behavior, with no fixtures or frameworks.
+   - Cover invariants (invalid construction raises the domain exception), calculations with known inputs, boundaries (`@pytest.mark.parametrize`).
 
-3. **Generate test files** — For each operations module, create `tests/test_{entity}.py` with:
-   - **Happy path tests** — create, read, list, update, delete all succeed
-   - **Not-found tests** — read/update/delete with invalid ID raises `KeyError`
-   - **Business logic tests** — any computed values (prices, totals, derived fields) verified with known inputs
-   - **Edge cases** — empty lists, partial updates (exclude_none), duplicate creation
+   **Service unit tests with fakes** (`tests/unit/` + `tests/fakes.py`)
+   - For each port the services use, write an **in-memory fake** that implements the project's actual Protocol: same method names, signatures, domain types and "not found" convention. Use no inheritance and no generic dict-based stub.
+   - Inject deterministic ID factories and clocks.
+   - Cover the happy path (assert the returned domain object and the state stored in the fake), each domain error path, and edge cases (empty, duplicates, conflicts).
+   - Prefer fakes over `unittest.mock`. Use mocks only to assert outbound side effects or to simulate failures.
 
-4. **Test structure** — Each test file follows:
-   ```python
-   import pytest
-   from conftest import DataInterfaceStub
-   from operations.{entity} import create_{entity}, read_{entity}, ...
+   **Repository integration tests** (`tests/integration/`)
+   - Use a session fixture on an in-memory SQLite engine (`StaticPool`) with tables created, or the project's real database via testcontainers if it relies on DB-specific behavior.
+   - Cover round-trip mapping (`add` then `get` returns an equal domain object), every query method including boundaries, and not-found behavior.
+   - Mark the tests `@pytest.mark.integration` and register the marker in `pyproject.toml` if it is missing.
 
-   @pytest.fixture
-   def stub():
-       return DataInterfaceStub()
+   **API tests** (`tests/api/`)
+   - Use `TestClient` built from the app factory with a test database URL, or override service providers via `app.dependency_overrides` with services built from fakes.
+   - Per endpoint, cover the success status and response shape, 422 on invalid payloads, and each domain error mapped to its status (404, 409, ...). Do not re-test business rules exhaustively here.
 
-   def test_create_{entity}(stub):
-       ...
+   Skip layers the project does not have (no API → no API tests; no persistence → no integration tests).
 
-   def test_read_{entity}_not_found(stub):
-       with pytest.raises(KeyError):
-           ...
-   ```
+4. **Ask before writing.** Use AskUserQuestion to confirm: "Generate these test files?" Show the list of files (including `tests/fakes.py` and any `conftest.py` changes) and the layer each one covers.
 
-5. **Ask before writing** — Use AskUserQuestion to confirm: "Generate these test files?" Show the list of files that will be created.
-
-6. **Write the test files** — Create all test files in the `tests/` directory.
+5. **Write the test files** and tell the user how to run them: `uv run pytest`, `uv run pytest tests/unit`, `uv run pytest -m "not integration"`. If `pytest` or `httpx` is missing from the dev dependency group, recommend `uv add --dev pytest httpx`. Do not run it without consent.
 
 For testing patterns and advanced techniques, consult:
-- `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/testable-api.md`
+- `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/testing-strategy.md`
 - `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/testing-advanced.md`
-- `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/examples/fastapi-hotel-api/` (working reference)
+- `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/examples/fastapi-hotel-api/tests/` (working reference: `fakes.py`, `unit/`, `integration/`, `api/`)

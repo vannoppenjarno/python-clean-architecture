@@ -14,11 +14,16 @@ Then review the code at `$ARGUMENTS` (or the current working directory if no pat
 
 1. **Read the code** — Find and read ALL Python files in the target path recursively. Read every `.py` file — do not skip any. Understand the project structure, imports, and relationships between files.
 
-2. **Check architecture layers** — Verify the three-layer separation:
-   - Routers (API) → Operations (business logic) → Database (persistence)
-   - No layer skipping (routers should not import DB modules directly)
-   - Operations accept `DataInterface` Protocol, not concrete DB classes
-   - Router acts as composition root (wires concrete implementations)
+2. **Check the dependency rule.** Dependencies must point inward only: Infrastructure / frameworks / DB → Adapters (API, CLI, repository implementations) → Services / use cases → Domain. Verify:
+   - **Domain is framework-free.** It does not import FastAPI, Pydantic, SQLModel/SQLAlchemy, HTTP clients or I/O. It uses plain dataclasses, enums and domain exceptions, and holds its own invariants and rules.
+   - **Services depend on ports.** They receive domain-specific `Protocol`s or `Callable`s through constructor or parameters. No SQL, ORM sessions, `select()`, `HTTPException` or status codes. No importing from `infrastructure/` or `api/`. No instantiating concrete repositories or clients.
+   - **Ports are domain-specific and typed.** Methods are named after use-case questions (`find_overlapping`, `get_by_email`) and accept and return domain objects. Flag generic `dict[str, Any]` CRUD contracts (`read_all()` then filtering in Python) and ports that leak ORM types.
+   - **SQLModel/ORM only in infrastructure.** Tables are persistence models, mapped explicitly to and from domain objects in the repository implementation. Flag a single model used as ORM table, API schema and domain entity at once.
+   - **Pydantic at the boundaries.** Request and response schemas, settings and external payloads use Pydantic and are mapped to domain objects in the adapter. No Pydantic models in the domain or as service inputs.
+   - **Adapters stay thin.** Routers translate HTTP to use-case calls with no business rules and no persistence logic. Domain exceptions are mapped to HTTP once (exception handlers), not scattered.
+   - **Single composition root.** Concrete implementations are created and wired in one place (`api/dependencies.py`, `main()`, a `bootstrap` module), not scattered across routers and services.
+   - **Structure is proportional to project size.** Flag missing structure (business rules in routers, services importing SQLModel, tests needing a DB to check a calculation). Also flag **over-engineering**: empty or one-trivial-file layers, Protocols with one implementation and no fake, pass-through services that only forward, or mapping code longer than the logic in a small script or CLI.
+   - **Patterns are justified.** Each abstraction or pattern solves a nameable problem (second implementation, test seam, growing `if/elif`, transaction boundary). Flag speculative ones.
 
 3. **Check the 7 design principles** — For each file/class/function, evaluate:
    - **High Cohesion** — Does each unit have a single responsibility?
@@ -67,39 +72,46 @@ Then review the code at `$ARGUMENTS` (or the current working directory if no pat
    ```
    Layers
    ──────
-   API:        routers/booking.py, routers/customer.py
-   Logic:      operations/booking.py, operations/customer.py
-   Database:   db/db_interface.py, db/models.py, db/database.py
-   Unclear:    utils/helpers.py (mixed concerns)
+   Domain:          domain/booking.py, domain/room.py, domain/errors.py
+   Services:        services/booking_service.py
+   Ports:           repositories/bookings.py, repositories/rooms.py
+   Infrastructure:  infrastructure/tables.py, infrastructure/sqlmodel_repositories.py, infrastructure/settings.py
+   API (adapter):   api/app.py, api/dependencies.py, api/schemas.py, api/routers/bookings.py, api/routers/rooms.py
+   Unclear:         utils/helpers.py (mixed concerns)
 
    Dependency Flows
    ────────────────
-   routers/booking.py → operations/booking.py → db/db_interface.py    ✓
-   routers/customer.py → operations/customer.py → db/db_interface.py  ✓
-   routers/admin.py → db/models.py                                    ⚠ layer skip
+   api/routers/rooms.py → services/room_service.py → repositories/rooms.py → domain/room.py   ✓
+   infrastructure/sqlmodel_repositories.py → domain/, infrastructure/tables.py                 ✓
+   api/dependencies.py → services/, infrastructure/  (composition root)                        ✓
+   api/routers/bookings.py → infrastructure/tables.py                                          ⚠ adapter bypasses service
+   services/booking_service.py → sqlmodel                                                      ⚠ infrastructure leak
+   domain/booking.py → pydantic                                                                ⚠ framework in domain
 
    Layer Violations
    ────────────────
-   ⚠ routers/admin.py imports db/models.py directly — should go through operations
+   ⚠ api/routers/bookings.py queries BookingTable directly — should call BookingService via a port
+   ⚠ services/booking_service.py builds select() statements — move the query into a repository method behind BookingRepository
    ```
 
-   Adapt to the actual project. If it does not follow the three-layer model, show the dependency flow as-is and note what a target architecture would look like. Keep it compact — group similar flows rather than listing every file individually if there are many.
+   Adapt to the actual project and its folder names. If it does not follow this layout (a simplified structure, a CLI, or another architecture), show the dependency flow as-is, judge it against the dependency rule rather than the folder names, and note what a proportionate target structure would look like. Keep it compact: group similar flows rather than listing every file when there are many.
 
    ### What Works Well
    Call out specific things the code does right. Reference files and patterns. Examples:
-   - Clean layer separation with no direct DB imports in routers
-   - Good use of Protocol-based DataInterface for dependency injection
-   - Consistent Pydantic model separation (Create vs Read)
-   - Effective use of dataclasses for value objects
-   - Pure functions in operations with side effects at boundaries
+   - Framework-free domain with invariants enforced in dataclasses
+   - Services depending on domain-specific repository Protocols, tested with in-memory fakes
+   - Explicit mapping between SQLModel tables and domain objects in the repository implementation
+   - Pydantic schemas kept at the API boundary (Create vs Out models with `from_domain()`)
+   - One composition root wiring concrete implementations
+   - Structure kept small where the project is small
    - Meaningful naming, good type hint coverage
 
    This section builds trust and avoids a purely negative tone. Be specific — cite actual files and lines, not generic praise.
 
    ### Findings by Severity
    Present issues organized by severity:
-   - **Critical** — Layer violations, missing abstractions, tight coupling to concrete DB
-   - **Important** — Cohesion issues, Law of Demeter violations, missing type hints
+   - **Critical** — Dependency rule violations (framework/ORM in domain, SQL/ORM or `HTTPException` in services, adapters bypassing services), business rules in routers, services coupled to concrete DB
+   - **Important** — Generic `dict[str, Any]` ports, missing boundary mapping, scattered wiring (no single composition root), over-engineered structure for the project size, cohesion issues, Law of Demeter violations, missing type hints
    - **Suggestions** — Pattern improvements, naming, simplification opportunities, cleanup refactorings
 
    For each finding, include all of the following:
@@ -113,6 +125,7 @@ Then review the code at `$ARGUMENTS` (or the current working directory if no pat
 ## In-Depth Mode
 
 If the user chose in-depth, load the following reference files for deeper analysis with detailed refactoring recipes and pattern guidance:
+- `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/layered-architecture.md`
 - `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/design-principles.md`
 - `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/code-quality.md`
 - `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/error-handling.md`

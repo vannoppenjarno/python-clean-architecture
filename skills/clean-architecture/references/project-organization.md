@@ -17,20 +17,23 @@ Every `.py` file is a **module**. Every folder containing an `__init__.py` is a 
 
 ```
 src/
-    __init__.py
-    main.py
-    customers/
+    my_app/                 # the single importable package (src/ layout)
         __init__.py
-        models.py
-        operations.py
-    contracts/
-        __init__.py
-        models.py
-        operations.py
-        sub_package/
+        main.py
+        customers/
             __init__.py
-            validation.py
+            models.py
+            services.py
+        contracts/
+            __init__.py
+            models.py
+            services.py
+            sub_package/
+                __init__.py
+                validation.py
 ```
+
+Use the `src/` layout: the importable package lives under `src/<package>/`, and `uv sync` installs it in editable mode, so tests import the package exactly as production does. See `project-setup.md`.
 
 ### What Modules and Packages Give You
 
@@ -48,8 +51,8 @@ Use the full package path from the project root. Absolute imports are explicit a
 
 ```python
 # GOOD: absolute import — clear origin
-from customers.models import Customer
-from contracts.operations import create_contract
+from my_app.customers.models import Customer
+from my_app.contracts.services import create_contract
 ```
 
 ### Relative Imports (Within a Package Only)
@@ -57,7 +60,7 @@ from contracts.operations import create_contract
 Use dot notation to import from sibling modules or parent packages. One dot means "same package," two dots means "parent package," and so on.
 
 ```python
-# Inside contracts/operations.py, importing from contracts/models.py
+# Inside contracts/services.py, importing from contracts/models.py
 from .models import Contract
 
 # Inside contracts/sub_package/validation.py, importing from contracts/models.py
@@ -68,7 +71,7 @@ Relative imports are **not allowed between top-level packages**. This will fail:
 
 ```python
 # WRONG: relative import across packages
-# Inside contracts/operations.py trying to reach customers/
+# Inside contracts/services.py trying to reach customers/
 from ..customers.models import Customer  # ImportError
 
 # CORRECT: use absolute import instead
@@ -171,25 +174,25 @@ src/
         invoice_repo.py
 ```
 
-Top-level folders represent architectural layers. The course uses this approach (with `operations/` and `db/` as layer names — see `layered-architecture.md`). It makes the architecture immediately visible.
+Top-level folders represent architectural layers. This is the default recommended layout for a normal application (`domain/`, `services/`, `repositories/`, `infrastructure/`, `api/`; see `layered-architecture.md`). It makes the architecture and the dependency direction immediately visible.
 
 **Trade-off:** A developer working on "contracts" must jump between three folders.
 
 ### Domain-First (by Business Domain)
 
 ```
-src/
+src/my_app/
     customers/
-        models.py
-        operations.py
-        repository.py
+        domain.py
+        services.py
+        repository.py      # port Protocol (implementation lives in infrastructure)
     contracts/
-        models.py
-        operations.py
+        domain.py
+        services.py
         repository.py
     invoices/
-        models.py
-        operations.py
+        domain.py
+        services.py
         repository.py
 ```
 
@@ -210,12 +213,12 @@ ui/
     data_display/   # tables, lists, cards, charts
 ```
 
-**Business Operations** — Group by domain area:
+**Use cases (services)** — Group by domain area:
 
 ```
-operations/
-    customers/      # create, update, delete customers
-    contracts/      # create, send, sign contracts
+services/
+    customers/      # register, update, deactivate customers
+    contracts/      # draft, send, sign contracts
     billing/        # generate invoices, process payments
 ```
 
@@ -277,37 +280,50 @@ src/
     pipeline.py     # orchestrates the elements
 ```
 
-### Clean Architecture (FastAPI Example)
+### Clean Architecture (recommended default for applications)
 
 ```
-src/
-    routers/        # HTTP layer — request/response handling
+src/my_app/
+    domain/          # entities, value objects, domain errors — pure Python
         customers.py
         contracts.py
-    operations/     # business logic — pure domain rules
+    services/        # use cases — depend on ports only
         customers.py
         contracts.py
-    db/             # persistence layer — database access
+    repositories/    # port Protocols, domain-specific
         customers.py
         contracts.py
-    models/         # shared data structures (Pydantic, dataclasses)
+    infrastructure/  # SQLModel tables, repository implementations, clients, settings
+        tables.py
         customers.py
         contracts.py
+    api/             # FastAPI adapter — routers, Pydantic schemas, dependency wiring
+        schemas.py
+        routers/
+            customers.py
+            contracts.py
 ```
+
+Pydantic request/response schemas live in `api/`, SQLModel tables in `infrastructure/`, and domain objects in `domain/`. One shared "models" folder used for all three is a coupling smell.
+
+Simplify when the project does not justify all layers (see the scaling table in `layered-architecture.md`), but keep the dependency direction.
 
 ### Choosing Between Domain-First and Architecture-First
 
 These two strategies are not mutually exclusive. Use architecture-driven top-level folders, then organize by domain within each layer:
 
 ```
-src/
-    routers/
+src/my_app/
+    domain/
         customers.py      # domain within architectural layer
         contracts.py
-    operations/
+    services/
         customers.py
         contracts.py
-    db/
+    infrastructure/
+        customers.py
+        contracts.py
+    api/
         customers.py
         contracts.py
 ```
@@ -315,20 +331,22 @@ src/
 Or use domain-driven top-level folders, then separate by architectural layer within each domain:
 
 ```
-src/
+src/my_app/
     customers/
-        router.py         # architectural layer within domain
-        operations.py
-        db.py
-        models.py
+        domain.py         # architectural layer within bounded context
+        services.py
+        repository.py     # port
+        infrastructure.py # SQLModel implementation
+        api.py
     contracts/
-        router.py
-        operations.py
-        db.py
-        models.py
+        domain.py
+        services.py
+        repository.py
+        infrastructure.py
+        api.py
 ```
 
-Pick one approach and apply it consistently across the entire project. The architecture should be visible in the folder tree, regardless of which axis comes first.
+Context-first scales better for large, multi-domain systems; layer-first is simpler for a single-domain service. Pick one approach and apply it consistently across the entire project. The architecture should be visible in the folder tree, regardless of which axis comes first.
 
 ---
 
@@ -344,7 +362,7 @@ A project serves more than just the developer writing code. Consider every stake
 | **New contributors** | README, contributing guide, wiki, license |
 | **Managers / clients** | Project structure overview, documentation, test reports |
 | **End users** | Documentation, API reference, examples |
-| **CI/CD systems** | Config files, test directories, requirements |
+| **CI/CD systems** | `pyproject.toml`, `uv.lock`, test directories |
 
 ### Repository Root Structure
 
@@ -354,15 +372,15 @@ Organize the repository root to serve all stakeholders at a glance:
 project-root/
     .vscode/            # shared editor settings (format-on-save, linting)
     .gitignore          # keep generated files out of version control
-    .pylintrc           # shared linter config — everyone uses the same rules
     LICENSE             # legal clarity for open-source consumers
     README.md           # about, install, usage, examples, contributing
-    requirements.txt    # or pyproject.toml — reproducible dependencies
+    pyproject.toml      # project metadata + dependencies (managed with uv)
+    uv.lock             # pinned, reproducible dependency versions (committed)
     assets/             # images, data files, PDFs the app needs at runtime
     docs/               # user-facing documentation
     wiki/               # developer-facing documentation (style guides, architecture decisions)
     locales/            # translations for multi-language applications
-    src/                # all application source code
+    src/<package>/      # all application source code (src/ layout)
     tests/              # all test code, mirroring src/ structure
     tools/              # dev scripts (DB reset, migrations, code generation)
     vendor/             # vendored third-party dependencies (if needed)
@@ -370,10 +388,10 @@ project-root/
 
 ### Key Principles
 
-- **Put shared configuration in the repository.** Linter settings, editor config, and formatting rules belong in version control so every developer works with identical tooling. Do not let style drift between team members.
+- **Put shared configuration in the repository.** Linter, formatter and type-checker settings (in `pyproject.toml`) and editor config belong in version control so every developer works with identical tooling. Do not let style drift between team members.
 - **Separate source from everything else.** The `src/` folder contains only application code. Tests, tools, docs, and assets live at the same level, not mixed into source packages.
 - **Never commit secrets.** Database credentials, API keys, and passwords must never enter the repository. Use environment variables, `.env` files (added to `.gitignore`), or separate configuration files distributed outside version control. Libraries like `python-decouple` or `python-dotenv` help manage this.
 
 ---
 
-*Content inspired by Arjan Codes' Software Designer Mindset course.*
+*Partly inspired by Arjan Codes' Software Designer Mindset course; adapted to this standard.*

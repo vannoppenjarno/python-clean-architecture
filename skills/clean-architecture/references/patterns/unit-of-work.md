@@ -122,52 +122,123 @@ except Exception as e:
 
 ---
 
-## SQLAlchemy Unit of Work
+## SQLAlchemy / SQLModel Unit of Work
 
-SQLAlchemy's `Session` already implements Unit of Work internally. Wrap it in a context manager for clean transaction boundaries:
+SQLAlchemy's `Session` (and SQLModel's, which builds on it) already implements Unit of Work internally: it tracks changes and flushes them in one transaction. Wrapping it in a context manager gives a clean transaction boundary:
 
 ```python
 import contextlib
-from sqlalchemy.orm import Session, scoped_session, sessionmaker
+from sqlmodel import Session
 
 
 @contextlib.contextmanager
-def unit_of_work():
-    session = Session()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+def transaction(engine: Engine) -> Iterator[Session]:
+    with Session(engine) as session:
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
 ```
 
-```python
-with unit_of_work() as session:
-    user = User(name="Arjan")
-    session.add(user)
-    session.flush()  # assigns ID without committing
-
-    user.name = "Arjan Updated"
-    # commit happens automatically when with-block exits cleanly
-```
+This is fine inside infrastructure code. Services, however, must not see a `Session`, so in the layered architecture the Unit of Work is split into a port and an implementation.
 
 ---
 
-## Relationship to Our Architecture
+## Unit of Work in the Layered Architecture
 
-In our three-layer architecture, the Unit of Work wraps the database session that `DBInterface` uses:
+> **Don't introduce it until you need it.** If each use case performs one write, letting the repository commit (as `SqlModelBookingRepository.add` does in `references/layered-architecture.md`) is simpler. Add a Unit of Work when a use case must make **several writes atomically**.
+
+### The port (inner side)
+
+A `Protocol` that exposes the typed repositories plus `commit` / `rollback`, and works as a context manager:
+
+```python
+# services/ports.py (or repositories/unit_of_work.py)
+from typing import Protocol, Self
+
+from hotel.repositories.bookings import BookingRepository
+from hotel.repositories.rooms import RoomRepository
+
+
+class UnitOfWork(Protocol):
+    rooms: RoomRepository
+    bookings: BookingRepository
+
+    def __enter__(self) -> Self: ...
+    def __exit__(self, *exc: object) -> None: ...   # rolls back if commit() wasn't called
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+```
+
+### The service (use case)
+
+The service decides *what* belongs in one transaction, without knowing *how* transactions work:
+
+```python
+# services/booking_service.py
+class GroupBookingService:
+    def __init__(self, uow: UnitOfWork, new_id: Callable[[], str]) -> None:
+        self._uow = uow
+        self._new_id = new_id
+
+    def book_group(self, commands: list[BookRoom]) -> list[Booking]:
+        with self._uow as uow:
+            bookings = []
+            for command in commands:
+                room = uow.rooms.get(command.room_id)
+                if room is None:
+                    raise RoomNotFound(command.room_id)
+                if uow.bookings.find_overlapping(room.id, command.period):
+                    raise RoomUnavailable(room.id, command.period)   # nothing is committed
+                booking = Booking(self._new_id(), room.id, command.guest_name,
+                                  command.period, room.price_for(command.period))
+                uow.bookings.add(booking)
+                bookings.append(booking)
+            uow.commit()                                             # all or nothing
+            return bookings
+```
+
+### The implementation (infrastructure/)
+
+The SQLModel Unit of Work owns the session and builds the repositories on it. Repositories used through a Unit of Work only `add`/`flush`; they never commit themselves. Here that is an `autocommit` flag on the repository implementation; once every use case goes through a Unit of Work, drop the commit from the repositories entirely.
+
+```python
+# infrastructure/unit_of_work.py
+class SqlModelUnitOfWork:
+    """Implements UnitOfWork (structurally)."""
+
+    def __init__(self, engine: Engine) -> None:
+        self._engine = engine
+
+    def __enter__(self) -> "SqlModelUnitOfWork":
+        self._session = Session(self._engine)
+        self.rooms = SqlModelRoomRepository(self._session, autocommit=False)
+        self.bookings = SqlModelBookingRepository(self._session, autocommit=False)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.rollback()          # no-op after a successful commit
+        self._session.close()
+
+    def commit(self) -> None:
+        self._session.commit()
+
+    def rollback(self) -> None:
+        self._session.rollback()
+```
+
+### Wiring and testing
 
 ```
-Router (composition root)
-  └── creates UnitOfWork context
-        └── UnitOfWork provides session to DBInterface
-              └── Operations use DBInterface via Protocol
+api/dependencies.py (composition root)
+  └── creates SqlModelUnitOfWork(engine)
+        └── passes it to GroupBookingService (typed as the UnitOfWork port)
+              └── service uses uow.rooms / uow.bookings and calls uow.commit()
 ```
 
-The router creates the transaction boundary; operations stay unaware of transaction management.
+In unit tests, pass a `FakeUnitOfWork` that holds the in-memory repositories from `tests/fakes.py` and records `committed = True` in `commit()`. Then assert both the stored data and whether a commit happened (for example, that a failed group booking never committed).
 
 ---
 
@@ -178,7 +249,7 @@ The router creates the transaction boundary; operations stay unaware of transact
 | Multiple entities must be written atomically | Single-entity CRUD operations |
 | Business rule requires all-or-nothing semantics | Database driver handles transactions implicitly |
 | You need explicit control over commit/rollback | Simple operations with auto-commit |
-| Operations span multiple repositories | One repository per request |
+| A use case writes through multiple repositories | One repository write per use case |
 
 ---
 

@@ -124,16 +124,52 @@ class PaymentProcessor:
 
 The "single dirty place" where all concrete implementations are chosen and wired together. In a well-designed codebase, this is the **only** place that knows about concrete classes.
 
-**In FastAPI:** The router layer is the composition root.
+**In FastAPI:** the dependency providers in `api/dependencies.py` are the composition root. They create the session, the concrete SQLModel repositories and the service. Routers only declare what they need; services only see ports.
 
 ```python
-# routers/rooms.py — composition root
-@router.get("/{room_id}", response_model=Room)
-def read_room(room_id: str) -> Room:
-    session = SessionLocal()
-    data_interface = DBInterface(session, DBRoom)  # concrete wiring HERE
-    return room_ops.read_room(room_id, data_interface)
+# api/dependencies.py — composition root
+from collections.abc import Iterator
+from typing import Annotated
+from uuid import uuid4
+
+from fastapi import Depends, Request
+from sqlmodel import Session
+
+from hotel.infrastructure.sqlmodel_repositories import (
+    SqlModelBookingRepository,
+    SqlModelRoomRepository,
+)
+from hotel.services.booking_service import BookingService
+
+
+def get_session(request: Request) -> Iterator[Session]:
+    with Session(request.app.state.engine) as session:
+        yield session
+
+
+SessionDep = Annotated[Session, Depends(get_session)]
+
+
+def get_booking_service(session: SessionDep) -> BookingService:
+    return BookingService(                       # concrete wiring HERE, and only here
+        rooms=SqlModelRoomRepository(session),
+        bookings=SqlModelBookingRepository(session),
+        new_id=lambda: str(uuid4()),
+    )
+
+
+BookingServiceDep = Annotated[BookingService, Depends(get_booking_service)]
 ```
+
+```python
+# api/routers/bookings.py — adapter: no concrete classes, no SQL
+@router.post("", response_model=BookingOut, status_code=status.HTTP_201_CREATED)
+def book_room(body: BookingCreate, service: BookingServiceDep) -> BookingOut:
+    command = BookRoom(body.room_id, body.guest_name, StayPeriod(body.check_in, body.check_out))
+    return BookingOut.from_domain(service.book_room(command))
+```
+
+`BookingService` depends only on the `RoomRepository` and `BookingRepository` Protocols. It never imports `Session`, SQLModel or FastAPI.
 
 **In scripts:** `main()` is the composition root.
 
@@ -190,19 +226,38 @@ processor = PaymentProcessor(lambda: True)
 processor = PaymentProcessor(lambda: False)
 ```
 
-For the DataInterface pattern used in this plugin's architecture:
+For services that depend on repository ports, inject in-memory fakes (kept in `tests/fakes.py`):
 
 ```python
-# Production (in router — composition root)
-data_interface = DBInterface(session, DBRoom)
-room = room_ops.read_room(room_id, data_interface)
+# Production (api/dependencies.py — composition root)
+service = BookingService(
+    rooms=SqlModelRoomRepository(session),
+    bookings=SqlModelBookingRepository(session),
+    new_id=lambda: str(uuid4()),
+)
 
 # Test (no database needed)
-stub = DataInterfaceStub()
-stub.data["room-1"] = {"id": "room-1", "number": "101", "size": 2, "price": 150}
-room = room_ops.read_room("room-1", stub)
-assert room.price == 150
+from tests.fakes import InMemoryBookingRepository, InMemoryRoomRepository
+
+room = Room(id="r1", number="101", capacity=2, nightly_rate=Decimal("150.00"))
+service = BookingService(
+    rooms=InMemoryRoomRepository([room]),
+    bookings=InMemoryBookingRepository(),
+    new_id=lambda: "b1",
+)
+booking = service.book_room(BookRoom("r1", "Ada", StayPeriod(date(2025, 3, 1), date(2025, 3, 3))))
+assert booking.total_price == Decimal("300.00")
 ```
+
+At the HTTP level, FastAPI lets you replace any provider without touching the routers:
+
+```python
+app.dependency_overrides[get_booking_service] = lambda: BookingService(
+    InMemoryRoomRepository([room]), InMemoryBookingRepository(), new_id=lambda: "b1"
+)
+```
+
+Clear `app.dependency_overrides` after the test (or build a fresh app per test with an app factory). See `testing-strategy.md` for the full testing approach per layer.
 
 ---
 

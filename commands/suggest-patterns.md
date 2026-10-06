@@ -36,7 +36,7 @@ Scan the code at `$ARGUMENTS` (or the current working directory if no path given
    | Client coupled to complex subsystem details | **Facade** | Simplified interface class, `functools.partial` to bind dependencies |
    | Transient failures in external API/DB calls | **Retry** | `@retry` decorator with exponential backoff, fallback strategies |
    | Slow startup loading unused resources | **Lazy Loading** | `functools.cache`, `cached_property`, generators, `__getattr__` |
-   | Data access logic mixed into domain classes | **Repository** | Protocol interface for CRUD, concrete implementations per backend |
+   | Data access logic mixed into domain classes or services | **Repository** | Domain-specific `Protocol` port (typed, named after use-case queries), implementation in infrastructure |
    | Sequential operations on an object are verbose | **Fluent Interface** | Methods return `self` for chaining, domain-specific verbs |
    | Need extensibility without modifying core code | **Plugin Architecture** | Config-driven creation, `importlib` auto-discovery, self-registering modules |
 
@@ -48,6 +48,6 @@ Scan the code at `$ARGUMENTS` (or the current working directory if no path given
    - **After** — refactored code using the Pythonic implementation
    - **Trade-off** — is the refactoring worth it here? (sometimes the simple version is fine)
 
-4. **Prioritize** — Order suggestions by impact. A pattern that simplifies 50 lines beats one that saves 3 lines. Note when the current code is simple enough that applying a pattern would be over-engineering.
+4. **Prioritize** — Order suggestions by impact. A pattern that simplifies 50 lines beats one that saves 3 lines. Note when the current code is simple enough that applying a pattern would be over-engineering. Only recommend a pattern when you can name the concrete problem it solves in this code (KISS/YAGNI).
 
 For full pattern progressions (OOP → functional), consult `${CLAUDE_PLUGIN_ROOT}/skills/clean-architecture/references/patterns/`.

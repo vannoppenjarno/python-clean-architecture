@@ -217,48 +217,79 @@ Compare this to the `try/finally` version. The function now focuses entirely on 
 
 ## 6. Error Handling Layers
 
-Structure error handling across architectural layers. Each layer has a specific responsibility.
+Structure error handling across architectural layers (`layered-architecture.md`). Each layer has a specific responsibility:
 
-### Business logic layer: raise domain exceptions
+| Layer | Responsibility |
+|---|---|
+| Domain | Defines domain exceptions. They describe *what* went wrong in business terms and carry **no HTTP status codes**. |
+| Services | Raise domain exceptions when a use case can't proceed. Never raise `HTTPException`. |
+| Infrastructure | Catches driver-specific errors only when it can translate them into something meaningful (e.g. a unique-constraint violation → `DuplicateBlogSlug`). Otherwise lets them propagate. |
+| API adapter | Maps domain exceptions to HTTP status codes, in one place. |
+
+### Domain: define exceptions without HTTP meaning
 
 ```python
-# operations/blogs.py
+# domain/errors.py
+class DomainError(Exception):
+    """Base class for business-rule failures."""
 
-def fetch_blog(blog_id: str) -> Blog:
-    with SQLite("application.db") as cursor:
-        cursor.execute("SELECT * FROM blogs WHERE id = ?", (blog_id,))
-        result = cursor.fetchone()
-
-    if result is None:
-        raise NotFoundError(f"Blog not found: {blog_id}")
-
-    blog = result_to_blog(result)
-
-    if not blog.public:
-        raise NotAuthorizedError(f"Access denied: {blog_id}")
-
-    return blog
+class BlogNotFound(DomainError): ...
+class BlogNotPublic(DomainError): ...
 ```
 
-### API layer: catch and convert to HTTP responses
+### Services: raise domain exceptions
 
 ```python
-# routers/blogs.py
-from fastapi import APIRouter, HTTPException
+# services/blog_service.py
+class BlogService:
+    def __init__(self, blogs: BlogRepository) -> None:   # port, not a DB connection
+        self._blogs = blogs
 
-router = APIRouter()
-
-
-@router.get("/blogs/{blog_id}")
-def get_blog(blog_id: str):
-    try:
-        blog = fetch_blog(blog_id)
+    def fetch_public_blog(self, blog_id: str) -> Blog:
+        blog = self._blogs.get(blog_id)
+        if blog is None:
+            raise BlogNotFound(blog_id)
+        if not blog.public:
+            raise BlogNotPublic(blog_id)
         return blog
-    except NotFoundError:
-        raise HTTPException(status_code=404, detail="Blog not found")
-    except NotAuthorizedError:
-        raise HTTPException(status_code=403, detail="Access denied")
 ```
+
+The SQL (and the `SQLite` context manager above) moves into `infrastructure/`, inside the `BlogRepository` implementation. The service no longer knows how blogs are stored.
+
+### API adapter: convert to HTTP responses
+
+Register exception handlers once, so every router benefits and routers stay free of `try/except` boilerplate:
+
+```python
+# api/errors.py
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+_STATUS_BY_ERROR: dict[type[DomainError], int] = {
+    BlogNotFound: 404,
+    BlogNotPublic: 403,
+}
+
+
+def register_error_handlers(app: FastAPI) -> None:
+    for error_type, status_code in _STATUS_BY_ERROR.items():
+        app.add_exception_handler(error_type, _make_handler(status_code))
+
+
+def _make_handler(status_code: int):
+    def handler(_: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=status_code, content={"detail": str(exc)})
+    return handler
+```
+
+```python
+# api/routers/blogs.py
+@router.get("/blogs/{blog_id}", response_model=BlogOut)
+def get_blog(blog_id: str, service: BlogServiceDep) -> BlogOut:
+    return BlogOut.from_domain(service.fetch_public_blog(blog_id))
+```
+
+For a single endpoint with special needs, a local `try/except BlogNotFound: raise HTTPException(404, ...)` in the router is also fine. The rule is that the mapping lives in the API adapter, never in the domain or services.
 
 ### Let unhandled exceptions propagate
 
@@ -267,10 +298,9 @@ Do not add a catch-all at the API layer. If an unexpected exception occurs (data
 ```python
 # BAD: catch-all hides real problems
 @router.get("/blogs/{blog_id}")
-def get_blog(blog_id: str):
+def get_blog(blog_id: str, service: BlogServiceDep):
     try:
-        blog = fetch_blog(blog_id)
-        return blog
+        return service.fetch_public_blog(blog_id)
     except Exception:  # masks database errors, typos, everything
         raise HTTPException(status_code=500, detail="Something went wrong")
 ```
